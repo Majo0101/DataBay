@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "databay"
+version = "0.1.0"
+description = "Data quality and comparison tooling for lakehouse datasets"
+authors = [
+    {name = "Marian Bodnar", email = "bodnar.marian@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyspark",
+    "pandas",
+    "plotly",
+    "docker",
+    "python-dotenv",
+    "ipython",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
