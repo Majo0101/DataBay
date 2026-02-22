@@ -67,9 +67,9 @@ RUN chown -R postgres:postgres /metastore && \
 # Set permissions
 RUN chown -R spark:spark /lakehouse /opt/spark /home/spark /data/apache
 
-# Copy startup script
+# Copy startup script and fix line endings
 COPY start.sh /start.sh
-RUN chmod +x /start.sh
+RUN sed -i 's/\r$//' /start.sh && chmod +x /start.sh
 
 VOLUME ["/lakehouse", "/metastore/pgdata", "/data/apache"]
 

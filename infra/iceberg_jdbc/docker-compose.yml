@@ -9,8 +9,8 @@ services:
     # Set your available RAM and CPU cores here
     # All Spark settings will be calculated automatically
     environment:
-      - SPARK_MEMORY=28      # GB of RAM for Spark
-      - SPARK_CORES=12       # Number of CPU cores
+      - SPARK_MEMORY=32      # GB of RAM for Spark
+      - SPARK_CORES=10       # Number of CPU cores
     
     ports:
       - "4040:4040"   # Spark UI
