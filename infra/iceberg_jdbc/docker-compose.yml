@@ -1,9 +1,10 @@
-version: '3.8'
+name: spark-iceberg
 
 services:
   spark-pg-iceberg:
     build: .
-    container_name: spark-pg-iceberg-test
+    image: spark-pg-iceberg
+    container_name: spark-pg-iceberg
     
     # Set your available RAM and CPU cores here
     # All Spark settings will be calculated automatically
@@ -16,8 +17,8 @@ services:
       - "15002:15002" # Spark Connect
     
     volumes:
-      - spark-lakehouse:/lakehouse
-      - spark-metastore:/metastore/pgdata
+      - iceberg-lakehouse:/lakehouse
+      - iceberg-metastore:/metastore/pgdata
       - C:/landing:/data/apache  # Windows landing folder for CSV files
     
     # Optional: mount your local notebooks/data
@@ -34,5 +35,7 @@ services:
       start_period: 60s
 
 volumes:
-  spark-lakehouse:
-  spark-metastore:
+  iceberg-lakehouse:
+    name: iceberg-lakehouse
+  iceberg-metastore:
+    name: iceberg-metastore

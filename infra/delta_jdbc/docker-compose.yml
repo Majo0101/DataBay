@@ -1,8 +1,9 @@
-version: '3.8'
+name: spark-delta
 
 services:
   spark-pg-delta:
     build: .
+    image: spark-pg-delta
     container_name: spark-pg-delta
     
     # Set your available RAM and CPU cores here
@@ -16,8 +17,8 @@ services:
       - "15002:15002" # Spark Connect
     
     volumes:
-      - spark-lakehouse:/lakehouse
-      - spark-metastore:/metastore/pgdata
+      - delta-lakehouse:/lakehouse
+      - delta-metastore:/metastore/pgdata
       - C:/landing:/data/apache  # Windows landing folder for CSV files
     
     # Optional: mount your local notebooks/data
@@ -34,5 +35,7 @@ services:
       start_period: 60s
 
 volumes:
-  spark-lakehouse:
-  spark-metastore:
+  delta-lakehouse:
+    name: delta-lakehouse
+  delta-metastore:
+    name: delta-metastore
