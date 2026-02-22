@@ -1,0 +1,20 @@
+# Docker ignore for Spark Delta Lake
+*.ipynb
+*.pyc
+__pycache__
+.git
+.vscode
+*.log
+.env
+.env.local
+*.swp
+*.swo
+*~
+.DS_Store
+data/
+notebooks/
+*.csv
+*.parquet
+*.json
+README.md
+docker-compose.override.yml

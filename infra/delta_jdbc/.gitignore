@@ -1,0 +1,50 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.py[cod]
+.Python
+env/
+venv/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Docker override
+docker-compose.override.yml
+
+# Local data (don't commit CSV/Parquet files)
+data/
+notebooks/
+*.csv
+*.parquet
+*.json
+*.avro
+
+# Spark/Metastore (local testing artifacts)
+metastore_db/
+derby.log
+spark-warehouse/
