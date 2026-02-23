@@ -18,13 +18,17 @@ def compare_datasets(
     Args:
         df_a: First DataFrame to compare
         df_b: Second DataFrame to compare
-        cols: List of columns to include in comparison
+        cols: List of columns to include in comparison (use ["*"] for all columns)
         name_a: Display name for first dataset (default: "Dataset A")
         name_b: Display name for second dataset (default: "Dataset B")
     
     Returns:
         DataFrame with metrics: row counts, differences, match percentages, Jaccard similarity
     """
+    
+    # Expand "*" to actual column list from df_a to ensure consistent column order
+    if cols == ["*"]:
+        cols = df_a.columns
 
     a = df_a.select(*cols).cache()
     b = df_b.select(*cols).cache()
