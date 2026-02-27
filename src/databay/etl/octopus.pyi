@@ -94,13 +94,13 @@ class Octopus:
 
     def load_csv(
         self,
-        spark: SparkSession,
+        spark: Optional[SparkSession],
         sources: List[Tuple[str, str]],
         dock_cfg: DockConfig,
         delimiter: str = "|",
         header: bool = True,
         infer_schema: bool = False,
-        as_view: bool = True,
+        mode: str = "both",
     ) -> Optional[Dict[str, DataFrame]]:
         """
         Load CSV files from Docker-mounted volumes into Spark.
@@ -112,10 +112,10 @@ class Octopus:
             delimiter: CSV delimiter character (default: "|")
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
-            as_view: If True, create temp views; if False, return dict of DataFrames
+            mode: Output mode - "view", "dfs", or "both" (default: "both")
             
         Returns:
-            None if as_view=True, otherwise dict of {table_name: DataFrame}
+            None or dict of {table_name: DataFrame}
             
         Raises:
             RuntimeError: If SparkSession is None

@@ -3,6 +3,7 @@ import csv
 import time
 
 from typing import Optional, Any
+from databay.runtime.docker import DockConfig
 
 from pyspark.sql import functions as F
 
@@ -313,7 +314,7 @@ class Octopus:
         delimiter="|",
         header=True,
         infer_schema=False,
-        as_view=True,
+        mode="both",
     ):
         """
         Load CSV files from Docker-mounted volumes into Spark.
@@ -325,19 +326,25 @@ class Octopus:
             delimiter: CSV delimiter character (default: "|")
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
-            as_view: If True, create temp views; if False, return dict of DataFrames
+            mode: Output mode - "view", "dfs", or "both" (default: "both")
             
         Returns:
-            None if as_view=True, otherwise dict of {table_name: DataFrame}
+            None or dict of {table_name: DataFrame}
             
         Raises:
             RuntimeError: If SparkSession is None
             ValueError: If host_path not found in DockConfig bind_mounts
         """
         if spark is None:
-            raise RuntimeError("SparkSession is None")
+            spark = self.spark
+        if spark is None:
+            raise RuntimeError("SparkSession is not set")
+        if mode not in {"view", "dfs", "both"}:
+            raise ValueError("mode must be one of: 'view', 'dfs', 'both'")
 
-        dfs = {}
+        create_view = mode in {"view", "both"}
+        keep_dfs = mode in {"dfs", "both"}
+        dfs = {} if keep_dfs else None
 
         for host_path, name in sources:
 
@@ -354,9 +361,9 @@ class Octopus:
                 .csv(container_path)
             )
 
-            if as_view:
+            if create_view:
                 df.createOrReplaceTempView(name)
-            else:
+            if keep_dfs and dfs is not None:
                 dfs[name] = df
 
-        return None if as_view else dfs
+        return dfs
