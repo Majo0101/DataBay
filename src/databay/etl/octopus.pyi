@@ -92,6 +92,45 @@ class Octopus:
         """
         ...
 
+    def read_jdbc(
+        self,
+        queries: List[Tuple[str, str]],
+        batch_size: int = 10000,
+        num_partitions: Optional[int] = None,
+        parallel_read: bool = False,
+        partition_column: Optional[str] = None,
+        lower_bound: Optional[int] = None,
+        upper_bound: Optional[int] = None,
+        infer_schema: bool = True,
+        schema: Optional[StructType] = None,
+        trust_server_certificate: bool = True,
+        encrypt: bool = False,
+    ) -> Dict[str, DataFrame]:
+        """
+        Read data from database via JDBC into Spark DataFrames (without writing tables).
+        
+        Args:
+            queries: List of (query, table_name) tuples to execute and collect
+            batch_size: Number of rows to fetch per round trip (default: 10000)
+            num_partitions: Number of JDBC partitions when parallel_read=True
+            parallel_read: Enable JDBC parallel read partitioning (default: False)
+            partition_column: Numeric/date column used for JDBC partitioning
+            lower_bound: Minimum bound for partition_column when parallel_read=True
+            upper_bound: Maximum bound for partition_column when parallel_read=True
+            infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
+            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            trust_server_certificate: For MSSQL, trust server certificate (default: True)
+            encrypt: For MSSQL, use encryption for connection (default: False)
+            
+        Returns:
+            Dict[str, DataFrame]: Mapping of table_name to loaded Spark DataFrame
+            
+        Raises:
+            RuntimeError: If SparkSession or engine is not initialized
+            ValueError: If parallel_read options are invalid
+        """
+        ...
+
     def load_csv(
         self,
         spark: Optional[SparkSession],

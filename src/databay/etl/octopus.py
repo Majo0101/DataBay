@@ -306,6 +306,99 @@ class Octopus:
                 .saveAsTable(f"{target_schema}.{table_name}")
             )
 
+    def read_jdbc(
+        self,
+        queries,
+        batch_size: int = 10000,
+        num_partitions: Optional[int] = None,
+        parallel_read: bool = False,
+        partition_column: Optional[str] = None,
+        lower_bound: Optional[int] = None,
+        upper_bound: Optional[int] = None,
+        infer_schema: bool = True,
+        schema: Optional[Any] = None,
+        trust_server_certificate: bool = True,
+        encrypt: bool = False,
+    ):
+        """
+        Read data from database via JDBC into Spark DataFrames (without writing tables).
+        
+        Args:
+            queries: List of (query, table_name) tuples to execute and collect
+            batch_size: Number of rows to fetch per round trip (default: 10000)
+            num_partitions: Number of JDBC partitions when parallel_read=True
+            parallel_read: Enable JDBC parallel read partitioning (default: False)
+            partition_column: Numeric/date column used for JDBC partitioning
+            lower_bound: Minimum bound for partition_column when parallel_read=True
+            upper_bound: Maximum bound for partition_column when parallel_read=True
+            infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
+            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            trust_server_certificate: For MSSQL, trust server certificate (default: True)
+            encrypt: For MSSQL, use encryption for connection (default: False)
+            
+        Returns:
+            Dict[str, DataFrame]: Mapping of table_name to loaded Spark DataFrame
+            
+        Raises:
+            RuntimeError: If SparkSession or engine is not initialized
+            ValueError: If parallel_read options are invalid
+        """
+        if self.spark is None:
+            raise RuntimeError("SparkSession is not set")
+        if self.engine is None:
+            raise RuntimeError("Engine is not set")
+
+        url = self._jdbc_url(self.engine)
+        opts = self._jdbc_base_options(self.engine)
+
+        # Add MSSQL-specific SSL/encryption options
+        if self.engine.lower() in ("mssql", "sqlserver"):
+            opts["trustServerCertificate"] = str(trust_server_certificate).lower()
+            opts["encrypt"] = str(encrypt).lower()
+
+        if parallel_read:
+            if not partition_column:
+                raise ValueError("partition_column is required when parallel_read=True")
+            if lower_bound is None or upper_bound is None:
+                raise ValueError("lower_bound and upper_bound are required when parallel_read=True")
+            if num_partitions is None or num_partitions < 1:
+                raise ValueError("num_partitions must be >= 1 when parallel_read=True")
+            if lower_bound >= upper_bound:
+                raise ValueError("lower_bound must be less than upper_bound")
+
+        dfs = {}
+
+        for query, table_name in queries:
+            reader = (
+                self.spark.read
+                .format("jdbc")
+                .option("url", url)
+                .option("dbtable", f"({query}) q")
+                .option("fetchsize", batch_size)
+                .options(**opts)
+            )
+
+            if parallel_read:
+                reader = (
+                    reader
+                    .option("partitionColumn", partition_column)
+                    .option("lowerBound", lower_bound)
+                    .option("upperBound", upper_bound)
+                    .option("numPartitions", num_partitions)
+                )
+
+            if schema is not None:
+                reader = reader.schema(schema)
+
+            df = reader.load()
+
+            if schema is None and not infer_schema:
+                df = df.select([F.col(c).cast("string").alias(c) for c in df.columns])
+
+            dfs[table_name] = df
+
+        return dfs
+
     def load_csv(
         self,
         spark,
