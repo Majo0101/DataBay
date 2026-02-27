@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objs as go
@@ -62,6 +62,39 @@ QUALITY_THRESHOLDS = {
     'ticktext': ["Critical", "Warning", "Perfect"]
 }
 
+def _prepare_plot_df(
+    df: pd.DataFrame,
+    column_col: str,
+    match_col: str,
+    value_mode: Literal["auto", "percent", "ratio"],
+    sort: bool,
+    ascending: bool,
+    top_n: Optional[int],
+) -> pd.DataFrame:
+    """Normalize metric values and optionally sort/filter rows for plotting."""
+    if top_n is not None and top_n < 1:
+        raise ValueError("top_n must be >= 1 when provided")
+
+    plot_df = df.copy()
+    plot_df[match_col] = pd.to_numeric(plot_df[match_col], errors="coerce")
+    if plot_df[match_col].isna().any():
+        raise ValueError(f"Column '{match_col}' contains non-numeric values")
+
+    if value_mode == "ratio":
+        plot_df[match_col] = plot_df[match_col] * 100
+    elif value_mode == "auto" and plot_df[match_col].max() <= 1.0:
+        plot_df[match_col] = plot_df[match_col] * 100
+
+    if sort:
+        plot_df = plot_df.sort_values(match_col, ascending=ascending)
+
+    if top_n is not None:
+        plot_df = plot_df.head(top_n)
+
+    # Keep explicit category order in chart
+    plot_df[column_col] = plot_df[column_col].astype(str)
+    return plot_df
+
 
 def plot_match_percentage(
     df: Union[pd.DataFrame, 'DataFrame'],
@@ -71,7 +104,16 @@ def plot_match_percentage(
     match_col: str = 'match_%',
     show_figure: bool = False,
     x_range: Optional[Tuple[int, int]] = None,
-    margin_left: int = 200
+    margin_left: int = 200,
+    value_mode: Literal["auto", "percent", "ratio"] = "auto",
+    sort: bool = False,
+    ascending: bool = True,
+    top_n: Optional[int] = None,
+    color_scale: Optional[List[Tuple[float, str]]] = None,
+    colorbar_ticks: Optional[Dict[str, Sequence[Union[int, str]]]] = None,
+    metric_label: str = "Match %",
+    show_reference_lines: bool = False,
+    reference_lines: Optional[Sequence[float]] = None,
 ) -> go.Figure:
     """
     Create a horizontal bar chart showing match percentages with data quality color coding.
@@ -102,6 +144,28 @@ def plot_match_percentage(
         Custom x-axis range as (min, max), by default (0, 105)
     margin_left : int, optional
         Left margin in pixels for y-axis labels, by default 200
+    value_mode : Literal["auto", "percent", "ratio"], optional
+        Metric scale interpretation:
+        - "auto": treat values <=1 as ratios and convert to percent
+        - "percent": use values as-is (expected 0..100)
+        - "ratio": always convert by multiplying by 100
+    sort : bool, optional
+        If True, sort bars by match values before plotting, by default False
+    ascending : bool, optional
+        Sort direction when sort=True, by default True
+    top_n : Optional[int], optional
+        If provided, keep only first N rows after sorting/filtering
+    color_scale : Optional[List[Tuple[float, str]]], optional
+        Custom Plotly continuous color scale. Defaults to DATA_QUALITY_COLORS.
+    colorbar_ticks : Optional[Dict[str, Sequence[Union[int, str]]]], optional
+        Custom colorbar ticks, e.g. {"tickvals":[70,95,100], "ticktext":[...]}.
+        Defaults to QUALITY_THRESHOLDS.
+    metric_label : str, optional
+        Axis/color metric label, by default "Match %"
+    show_reference_lines : bool, optional
+        If True, draw vertical reference lines, by default False
+    reference_lines : Optional[Sequence[float]], optional
+        X positions for reference lines. Defaults to [95.0, 99.0] if enabled.
     
     Returns
     -------
@@ -149,20 +213,35 @@ def plot_match_percentage(
     if match_col not in df.columns:
         raise ValueError(f"Column '{match_col}' not found in DataFrame")
     
+    plot_df = _prepare_plot_df(
+        df=df,
+        column_col=column_col,
+        match_col=match_col,
+        value_mode=value_mode,
+        sort=sort,
+        ascending=ascending,
+        top_n=top_n,
+    )
+
     # Set default x-axis range if not provided
     if x_range is None:
         x_range = (0, 115)
-    
+
+    if color_scale is None:
+        color_scale = DATA_QUALITY_COLORS
+    if colorbar_ticks is None:
+        colorbar_ticks = QUALITY_THRESHOLDS
+
     # Create the bar chart
     fig = px.bar(
-        df,
+        plot_df,
         y=column_col,
         x=match_col,
         orientation='h',
         text=match_col,
         color=match_col,
-        color_continuous_scale=DATA_QUALITY_COLORS,
-        labels={match_col: 'Match %', column_col: 'Column Name'},
+        color_continuous_scale=color_scale,
+        labels={match_col: metric_label, column_col: 'Column Name'},
         title=f'<b>{title}</b>',
         height=height,
         range_color=[0, 100]
@@ -197,7 +276,7 @@ def plot_match_percentage(
         yaxis=dict(
             showgrid=False,
             categoryorder='array',
-            categoryarray=df[column_col].tolist(),
+            categoryarray=plot_df[column_col].tolist(),
             title='Column Name',
             title_font=dict(size=13)
         ),
@@ -212,7 +291,7 @@ def plot_match_percentage(
             len=1.0,
             x=0.88,
             xanchor='left',
-            **QUALITY_THRESHOLDS
+            **colorbar_ticks
         ),
         hoverlabel=dict(
             bgcolor="white",
@@ -220,6 +299,16 @@ def plot_match_percentage(
             font_family="Arial, sans-serif"
         )
     )
+
+    if show_reference_lines:
+        lines = list(reference_lines) if reference_lines is not None else [95.0, 99.0]
+        for x_val in lines:
+            fig.add_vline(
+                x=x_val,
+                line_width=1,
+                line_dash="dash",
+                line_color="#9e9e9e",
+            )
     
     # Display figure if requested
     if show_figure:
@@ -263,10 +352,165 @@ def plot_match_percentage_sorted(
     >>> fig = plot_match_percentage_sorted(df, ascending=False)  # Highest first
     >>> fig = plot_match_percentage_sorted(spark_df, ascending=True)  # Lowest first
     """
-    # Convert to Pandas if needed
-    df = _to_pandas(df)
-    
-    # Sort the data
-    sorted_df = df.sort_values('match_%', ascending=ascending).copy()
-    
-    return plot_match_percentage(sorted_df, title=title, **kwargs)
+    kwargs.setdefault("sort", True)
+    kwargs.setdefault("ascending", ascending)
+    return plot_match_percentage(df, title=title, **kwargs)
+
+
+def plot_overlap(
+    df: Union[pd.DataFrame, "DataFrame"],
+    title: str = "Overlap Comparison",
+    label_col: str = "label",
+    left_count_col: str = "left_count",
+    right_count_col: str = "right_count",
+    overlap_count_col: str = "overlap_count",
+    left_name: str = "Left",
+    right_name: str = "Right",
+    show_figure: bool = False,
+    height: int = 500,
+    overlap_color: str = "#43a047",
+    left_only_color: str = "#f9a825",
+    right_only_color: str = "#e53935",
+) -> go.Figure:
+    """
+    Plot overlap as two stacked horizontal bars (left/right) per label.
+
+    Expects a summary table with counts:
+    - label
+    - left_count
+    - right_count
+    - overlap_count
+    """
+    pdf = _to_pandas(df)
+
+    required = [label_col, left_count_col, right_count_col, overlap_count_col]
+    missing = [c for c in required if c not in pdf.columns]
+    if missing:
+        raise ValueError(f"Missing required column(s): {', '.join(missing)}")
+
+    work = pdf.copy()
+    for col in [left_count_col, right_count_col, overlap_count_col]:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+        if work[col].isna().any():
+            raise ValueError(f"Column '{col}' contains non-numeric values")
+        if (work[col] < 0).any():
+            raise ValueError(f"Column '{col}' must be >= 0")
+
+    if (work[overlap_count_col] > work[left_count_col]).any() or (work[overlap_count_col] > work[right_count_col]).any():
+        raise ValueError("overlap_count cannot be greater than left_count/right_count")
+
+    work["left_only"] = work[left_count_col] - work[overlap_count_col]
+    work["right_only"] = work[right_count_col] - work[overlap_count_col]
+
+    rows = []
+    for _, r in work.iterrows():
+        label = str(r[label_col])
+        overlap = float(r[overlap_count_col])
+        left_only = float(r["left_only"])
+        right_only = float(r["right_only"])
+        left_total = float(r[left_count_col])
+        right_total = float(r[right_count_col])
+
+        rows.append(
+            {
+                "row": f"{label} | {left_name}",
+                "side": left_name,
+                "overlap": overlap,
+                "only": left_only,
+                "total": left_total,
+                "only_type": "left",
+            }
+        )
+        rows.append(
+            {
+                "row": f"{label} | {right_name}",
+                "side": right_name,
+                "overlap": overlap,
+                "only": right_only,
+                "total": right_total,
+                "only_type": "right",
+            }
+        )
+
+    bars = pd.DataFrame(rows)
+
+    fig = go.Figure()
+    fig.add_bar(
+        name="Overlap",
+        y=bars["row"],
+        x=bars["overlap"],
+        orientation="h",
+        marker_color=overlap_color,
+        hovertemplate="<b>%{y}</b><br>Overlap: %{x:,.0f}<extra></extra>",
+    )
+
+    fig.add_bar(
+        name=f"Only in {left_name}",
+        y=bars["row"],
+        x=bars.apply(lambda r: r["only"] if r["only_type"] == "left" else 0.0, axis=1),
+        orientation="h",
+        marker_color=left_only_color,
+        hovertemplate="<b>%{y}</b><br>Only: %{x:,.0f}<extra></extra>",
+    )
+
+    fig.add_bar(
+        name=f"Only in {right_name}",
+        y=bars["row"],
+        x=bars.apply(lambda r: r["only"] if r["only_type"] == "right" else 0.0, axis=1),
+        orientation="h",
+        marker_color=right_only_color,
+        hovertemplate="<b>%{y}</b><br>Only: %{x:,.0f}<extra></extra>",
+    )
+
+    max_total = float(bars["total"].max()) if len(bars) > 0 else 1.0
+    for _, r in bars.iterrows():
+        overlap_pct = (r["overlap"] / r["total"] * 100) if r["total"] > 0 else 0.0
+        fig.add_annotation(
+            x=r["total"],
+            y=r["row"],
+            text=f"Total: {r['total']:,.0f} | Overlap: {overlap_pct:.1f}%",
+            showarrow=False,
+            xanchor="left",
+            xshift=6,
+            font=dict(size=11, color="#424242"),
+        )
+
+    fig.update_layout(
+        title=f"<b>{title}</b>",
+        barmode="stack",
+        height=height,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(size=12, family="Arial, sans-serif"),
+        margin=dict(l=220, r=120, t=60, b=50),
+        xaxis=dict(
+            title="Count",
+            showgrid=True,
+            gridcolor="lightgray",
+            range=[0, max_total * 1.25],
+        ),
+        yaxis=dict(
+            showgrid=False,
+            categoryorder="array",
+            categoryarray=bars["row"].tolist(),
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        modebar=dict(
+            remove=[
+                "zoom2d",
+                "pan2d",
+                "select2d",
+                "lasso2d",
+                "autoScale2d",
+                "resetScale2d",
+                "toggleSpikelines",
+                "hoverCompareCartesian",
+                "hoverClosestCartesian",
+            ]
+        ),
+    )
+
+    if show_figure:
+        fig.show(config={"displaylogo": False})
+
+    return fig
