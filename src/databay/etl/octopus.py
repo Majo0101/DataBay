@@ -399,6 +399,82 @@ class Octopus:
 
         return dfs
 
+    def write_jdbc(
+        self,
+        data,
+        target_table: Optional[str] = None,
+        target_schema: Optional[str] = None,
+        mode: str = "append",
+        batch_size: int = 10000,
+        truncate: bool = False,
+        trust_server_certificate: bool = True,
+        encrypt: bool = False,
+    ):
+        """
+        Write Spark DataFrame(s) to a JDBC database table.
+        
+        Args:
+            data: DataFrame or dict[str, DataFrame]. If dict, keys are table names.
+            target_table: Required when data is a single DataFrame.
+            target_schema: Optional schema prefix for destination table(s).
+            mode: Write mode - "append", "overwrite", "error", "errorifexists", "ignore".
+            batch_size: Number of rows per write batch (default: 10000).
+            truncate: For overwrite mode, request table truncation instead of drop/recreate.
+            trust_server_certificate: For MSSQL, trust server certificate (default: True).
+            encrypt: For MSSQL, use encryption for connection (default: False).
+            
+        Raises:
+            RuntimeError: If SparkSession or engine is not initialized.
+            ValueError: If arguments are invalid.
+        """
+        if self.spark is None:
+            raise RuntimeError("SparkSession is not set")
+        if self.engine is None:
+            raise RuntimeError("Engine is not set")
+
+        valid_modes = {"append", "overwrite", "error", "errorifexists", "ignore"}
+        if mode not in valid_modes:
+            raise ValueError(f"Unsupported write mode: {mode}")
+
+        url = self._jdbc_url(self.engine)
+        opts = self._jdbc_base_options(self.engine)
+
+        # Add MSSQL-specific SSL/encryption options
+        if self.engine.lower() in ("mssql", "sqlserver"):
+            opts["trustServerCertificate"] = str(trust_server_certificate).lower()
+            opts["encrypt"] = str(encrypt).lower()
+
+        targets = {}
+        if isinstance(data, dict):
+            targets = data
+            if target_table is not None:
+                raise ValueError("target_table must be None when data is a dict[str, DataFrame]")
+        else:
+            if not target_table:
+                raise ValueError("target_table is required when data is a single DataFrame")
+            targets[target_table] = data
+
+        for table_name, df in targets.items():
+            if target_schema:
+                dbtable = f"{target_schema}.{table_name}"
+            else:
+                dbtable = table_name
+
+            writer = (
+                df.write
+                .format("jdbc")
+                .option("url", url)
+                .option("dbtable", dbtable)
+                .option("batchsize", batch_size)
+                .options(**opts)
+                .mode(mode)
+            )
+
+            if mode == "overwrite" and truncate:
+                writer = writer.option("truncate", "true")
+
+            writer.save()
+
     def load_csv(
         self,
         spark,

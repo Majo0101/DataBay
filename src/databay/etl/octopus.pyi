@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import StructType
@@ -128,6 +128,36 @@ class Octopus:
         Raises:
             RuntimeError: If SparkSession or engine is not initialized
             ValueError: If parallel_read options are invalid
+        """
+        ...
+
+    def write_jdbc(
+        self,
+        data: Union[DataFrame, Dict[str, DataFrame]],
+        target_table: Optional[str] = None,
+        target_schema: Optional[str] = None,
+        mode: str = "append",
+        batch_size: int = 10000,
+        truncate: bool = False,
+        trust_server_certificate: bool = True,
+        encrypt: bool = False,
+    ) -> None:
+        """
+        Write Spark DataFrame(s) to a JDBC database table.
+        
+        Args:
+            data: DataFrame or dict[str, DataFrame]. If dict, keys are table names.
+            target_table: Required when data is a single DataFrame.
+            target_schema: Optional schema prefix for destination table(s).
+            mode: Write mode - "append", "overwrite", "error", "errorifexists", "ignore".
+            batch_size: Number of rows per write batch (default: 10000).
+            truncate: For overwrite mode, request table truncation instead of drop/recreate.
+            trust_server_certificate: For MSSQL, trust server certificate (default: True).
+            encrypt: For MSSQL, use encryption for connection (default: False).
+            
+        Raises:
+            RuntimeError: If SparkSession or engine is not initialized.
+            ValueError: If arguments are invalid.
         """
         ...
 
