@@ -19,6 +19,8 @@ class DockConfig:
         env: Environment variables to set in container {var_name: value}
         network: Docker network name to attach container to (None for default)
         restart_policy: Container restart policy (e.g., {"Name": "unless-stopped"})
+        wsl_uid: Linux UID to run container process as for WSL write permissions
+        wsl_gid: Linux GID to run container process as for WSL write permissions
     
     Example:
         >>> config = DockConfig(
@@ -29,17 +31,21 @@ class DockConfig:
         ...     bind_mounts={"/local/path": "/container/path"},
         ...     env={"SPARK_MODE": "master"},
         ...     network="spark-network",
-        ...     restart_policy={"Name": "unless-stopped"}
+        ...     restart_policy={"Name": "unless-stopped"},
+        ...     wsl_uid=1000,
+        ...     wsl_gid=1000,
         ... )
     """
-    image: str
-    name: str
-    ports: Dict[str, int]
-    named_volumes: Dict[str, str]
-    bind_mounts: Dict[str, str]
-    env: Dict[str, str]
-    network: Optional[str]
-    restart_policy: Dict[str, Any]
+    image: str = ...
+    name: str = ...
+    ports: Dict[str, int] = ...
+    named_volumes: Dict[str, str] = ...
+    bind_mounts: Dict[str, str] = ...
+    env: Dict[str, str] = ...
+    network: Optional[str] = ...
+    restart_policy: Dict[str, Any] = ...
+    wsl_uid: Optional[int] = ...
+    wsl_gid: Optional[int] = ...
 
 
 def dock(cfg: DockConfig) -> str:

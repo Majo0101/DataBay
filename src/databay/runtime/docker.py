@@ -25,6 +25,9 @@ class DockConfig:
     env: Dict[str, str] = field(default_factory=dict)
     network: Optional[str] = None
     restart_policy: Dict[str, Any] = field(default_factory=lambda: {"Name": "unless-stopped"})
+    # Linux user/group to run container processes as (useful for WSL bind-mount writes)
+    wsl_uid: Optional[int] = None
+    wsl_gid: Optional[int] = None
 
 
 def dock(cfg: DockConfig) -> str:
@@ -60,6 +63,10 @@ def dock(cfg: DockConfig) -> str:
 
     # Run new container
     try:
+        user: Optional[str] = None
+        if cfg.wsl_uid is not None:
+            user = f"{cfg.wsl_uid}:{cfg.wsl_gid}" if cfg.wsl_gid is not None else str(cfg.wsl_uid)
+
         c = client.containers.run(
             cfg.image,
             name=cfg.name,
@@ -68,6 +75,7 @@ def dock(cfg: DockConfig) -> str:
             volumes=volumes,
             environment=cfg.env,
             network=cfg.network,
+            user=user,
             restart_policy=cfg.restart_policy if cfg.restart_policy else None, # type: ignore
         ) # pyright: ignore[reportCallIssue]
         return c.id if c.id else ""

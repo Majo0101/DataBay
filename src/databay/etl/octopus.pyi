@@ -59,7 +59,11 @@ class Octopus:
         queries: List[Tuple[str, str]],
         target_schema: str,
         batch_size: int = 10000,
-        num_partitions: int = 1,
+        num_partitions: Optional[int] = None,
+        parallel_read: bool = False,
+        partition_column: Optional[str] = None,
+        lower_bound: Optional[int] = None,
+        upper_bound: Optional[int] = None,
         infer_schema: bool = True,
         schema: Optional[StructType] = None,
         trust_server_certificate: bool = True,
@@ -73,7 +77,11 @@ class Octopus:
             queries: List of (query, table_name) tuples to execute and save
             target_schema: Target schema/database name in Spark catalog
             batch_size: Number of rows to fetch per round trip (default: 10000)
-            num_partitions: Number of parallel JDBC connections (default: 1, max depends on DB credentials)
+            num_partitions: Number of JDBC partitions when parallel_read=True
+            parallel_read: Enable JDBC parallel read partitioning (default: False)
+            partition_column: Numeric/date column used for JDBC partitioning
+            lower_bound: Minimum bound for partition_column when parallel_read=True
+            upper_bound: Maximum bound for partition_column when parallel_read=True
             infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
             schema: Optional custom PySpark schema. Overrides infer_schema if provided
             trust_server_certificate: For MSSQL, trust server certificate (default: True)
