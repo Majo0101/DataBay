@@ -166,8 +166,9 @@ fig.show()
 
 #### **octopus.py**
 - `Octopus` class - Multi-database ETL orchestrator
-  - `.dump_data()` - Export to CSV/Parquet/Delta
+  - `.read_jdbc()` - Read JDBC results into DataFrames
   - `.feed_spark()` - Load to Spark Delta tables
+  - `.write_jdbc()` - Write DataFrames to JDBC tables
   - `.load_csv()` - Import CSV from volumes
 
 ### `databay.runtime`

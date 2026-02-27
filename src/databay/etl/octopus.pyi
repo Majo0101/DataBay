@@ -30,30 +30,6 @@ class Octopus:
         """
         ...
 
-    def dump_data(
-        self,
-        queries: List[Tuple[str, str]],
-        output_path: str,
-        format: str = "csv",
-        delimiter: str = "|",
-        batch_size: int = 10000,
-    ) -> None:
-        """
-        Extract data from database via JDBC and save to files.
-        
-        Args:
-            queries: List of (query, table_name) tuples to execute and save
-            output_path: Target directory path for output files
-            format: Output format - "csv", "parquet", or "delta" (default: "csv")
-            delimiter: CSV delimiter character (default: "|")
-            batch_size: Number of rows to fetch per round trip (default: 10000)
-            
-        Raises:
-            RuntimeError: If SparkSession is not initialized
-            ValueError: If output format is not supported
-        """
-        ...
-
     def feed_spark(
         self,
         queries: List[Tuple[str, str]],

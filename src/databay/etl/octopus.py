@@ -149,68 +149,6 @@ class Octopus:
         raise ValueError(f"Unsupported engine: {engine}")
 
 
-    def dump_data(
-        self,
-        queries,
-        output_path: str,
-        format: str = "csv",
-        delimiter: str = "|",
-        batch_size: int = 10000,
-    ):
-        """
-        Extract data from database via JDBC and save to files.
-        
-        Args:
-            queries: List of (query, table_name) tuples to execute and save
-            output_path: Target directory path for output files
-            format: Output format - "csv", "parquet", or "delta" (default: "csv")
-            delimiter: CSV delimiter character (default: "|")
-            batch_size: Number of rows to fetch per round trip (default: 10000)
-            
-        Raises:
-            RuntimeError: If SparkSession is not initialized
-            ValueError: If output format is not supported
-        """
-        if self.spark is None:
-            raise RuntimeError("SparkSession is not set")
-        if self.engine is None:
-            raise RuntimeError("Engine is not set")
-
-        url = self._jdbc_url(self.engine)
-        opts = self._jdbc_base_options(self.engine)
-
-        for query, table_name in queries:
-            df = (
-                self.spark.read
-                .format("jdbc")
-                .option("url", url)
-                .option("query", query)
-                .option("fetchsize", batch_size)
-                .options(**opts)
-                .load()
-            )
-
-            target = f"{output_path}/{table_name}"
-
-            if format == "csv":
-                (
-                    df.write
-                    .mode("overwrite")
-                    .option("header", True)
-                    .option("delimiter", delimiter)
-                    .csv(target)
-                )
-
-            elif format == "parquet":
-                df.write.mode("overwrite").parquet(target)
-
-            elif format == "delta":
-                df.write.format("delta").mode("overwrite").save(target)
-
-            else:
-                raise ValueError(f"Unsupported format: {format}")
-
-
     def feed_spark(
         self,
         queries,
