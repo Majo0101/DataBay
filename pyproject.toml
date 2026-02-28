@@ -31,3 +31,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that require external runtime dependencies",
+    "slow: marks long-running tests",
+]

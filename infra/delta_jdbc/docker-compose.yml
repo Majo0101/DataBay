@@ -1,4 +1,4 @@
-name: spark-delta
+name: spark-pg-delta
 
 services:
   spark-pg-delta:
