@@ -1,0 +1,22 @@
+name: psg-db
+
+services:
+  postgres-test:
+    build: .
+    image: psg-db
+    container_name: psg-db
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-testdb}
+      - POSTGRES_USER=${POSTGRES_USER:-test_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-test_pass}
+    ports:
+      - "5432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    restart: unless-stopped
