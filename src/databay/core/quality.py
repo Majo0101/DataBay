@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
@@ -78,42 +78,6 @@ def null_rate(
         result = result.orderBy(F.col("null_percentage").desc())
     
     return result
-
-def pk_uniqueness_check(df: DataFrame, pk_cols: List[str]) -> DataFrame:
-    """
-    Check if primary key columns contain only unique values (no duplicates) and no NULLs.
-    
-    Args:
-        df: DataFrame to validate
-        pk_cols: List of primary key column names
-    
-    Returns:
-        DataFrame with summary statistics showing:
-        - total_rows: Total number of records
-        - rows_appearing_once: Records with unique PK values
-        - rows_in_duplicate_groups: Records with duplicate PK values
-        - distinct_value_combinations: Number of unique PK combinations
-        - combinations_with_duplicates: Number of PK values that appear multiple times
-        - total_null_values: Total NULL count across all PK columns
-        - null_in_[column]: NULL count per PK column
-    
-    Notes:
-        - This is a wrapper around duplicate_check() optimized for PK validation
-        - A valid primary key should have:
-          * rows_in_duplicate_groups = 0 (no duplicates)
-          * total_null_values = 0 (no NULLs)
-        - Automatically enables NULL checking (check_nulls=True)
-    
-    Example:
-        >>> result = pk_uniqueness_check(df, ["customer_id"])
-        >>> result.show()
-    """
-    return duplicate_check(
-        df,
-        cols=pk_cols,
-        show_summary_only=True,
-        check_nulls=True
-    )
 
 def duplicate_check(
     df: DataFrame,
@@ -233,3 +197,270 @@ def duplicate_check(
         # Reorder columns: duplicate_count first, then the checked columns
         ordered_cols = ["duplicate_count"] + cols_to_check
         return result.select(*ordered_cols)
+
+
+def pk_uniqueness_check(df: DataFrame, pk_cols: List[str]) -> DataFrame:
+    """
+    Check if primary key columns contain only unique values (no duplicates) and no NULLs.
+    
+    Args:
+        df: DataFrame to validate
+        pk_cols: List of primary key column names
+    
+    Returns:
+        DataFrame with summary statistics showing:
+        - total_rows: Total number of records
+        - rows_appearing_once: Records with unique PK values
+        - rows_in_duplicate_groups: Records with duplicate PK values
+        - distinct_value_combinations: Number of unique PK combinations
+        - combinations_with_duplicates: Number of PK values that appear multiple times
+        - total_null_values: Total NULL count across all PK columns
+        - null_in_[column]: NULL count per PK column
+    
+    Notes:
+        - This is a wrapper around duplicate_check() optimized for PK validation
+        - A valid primary key should have:
+          * rows_in_duplicate_groups = 0 (no duplicates)
+          * total_null_values = 0 (no NULLs)
+        - Automatically enables NULL checking (check_nulls=True)
+    
+    Example:
+        >>> result = pk_uniqueness_check(df, ["customer_id"])
+        >>> result.show()
+    """
+    return duplicate_check(
+        df,
+        cols=pk_cols,
+        show_summary_only=True,
+        check_nulls=True
+    )
+
+
+def regex_check(
+    df: DataFrame,
+    rules: Dict[str, str],
+    show_summary_only: bool = True,
+    top_n: int = 10,
+) -> DataFrame:
+    """
+    Validate one or more columns against regex patterns.
+
+    Args:
+        df: DataFrame to validate
+        rules: Mapping of column_name -> regex pattern
+        show_summary_only: If True, returns one-row summary.
+                          If False, returns non-matching values (default: True)
+        top_n: Number of top non-matching values to show per column when
+               show_summary_only=False (default: 10)
+
+    Returns:
+        If show_summary_only=True:
+            DataFrame with one row per checked column:
+            - column_name
+            - pattern
+            - total_rows
+            - matching_rows
+            - non_matching_rows
+            - match_percentage
+
+        If show_summary_only=False:
+            DataFrame with non-matching values:
+            - column_name
+            - pattern
+            - non_matching_value
+            - non_matching_count
+    """
+    if not rules:
+        raise ValueError("rules must be a non-empty dict of column_name -> regex pattern")
+
+    for col_name, pattern in rules.items():
+        if col_name not in df.columns:
+            raise ValueError(f"Column '{col_name}' not found in DataFrame")
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError(f"Pattern for column '{col_name}' must be a non-empty string")
+
+    total_rows = df.count()
+
+    # NULL is considered non-matching for regex validation
+    match_exprs = {
+        col_name: F.when(
+            F.col(col_name).isNotNull() & F.col(col_name).cast("string").rlike(pattern),
+            1
+        ).otherwise(0)
+        for col_name, pattern in rules.items()
+    }
+
+    if show_summary_only:
+        agg_exprs = [F.sum(expr).alias(col_name) for col_name, expr in match_exprs.items()]
+        agg_result = df.select(agg_exprs).collect()[0].asDict()
+
+        summary_rows = [
+            (
+                col_name,
+                pattern,
+                total_rows,
+                agg_result.get(col_name) or 0,
+                total_rows - (agg_result.get(col_name) or 0),
+                round(((agg_result.get(col_name) or 0) / total_rows * 100) if total_rows > 0 else 0.0, 4),
+            )
+            for col_name, pattern in rules.items()
+        ]
+
+        return df.sparkSession.createDataFrame(
+            summary_rows,
+            [
+                "column_name",
+                "pattern",
+                "total_rows",
+                "matching_rows",
+                "non_matching_rows",
+                "match_percentage",
+            ],
+        )
+
+    # Detailed mode: return non-matching values and their frequency
+    detailed = None
+    for rule_order, (col_name, pattern) in enumerate(rules.items()):
+        invalid = (
+            df.filter(match_exprs[col_name] == 0)
+            .select(F.col(col_name).cast("string").alias("non_matching_value"))
+            .na.fill({"non_matching_value": "<NULL>"})
+            .groupBy("non_matching_value")
+            .agg(F.count("*").alias("non_matching_count"))
+            .withColumn("column_name", F.lit(col_name))
+            .withColumn("pattern", F.lit(pattern))
+            .withColumn("_rule_order", F.lit(rule_order))
+            .select("column_name", "pattern", "non_matching_value", "non_matching_count", "_rule_order")
+            .orderBy(F.col("non_matching_count").desc())
+            .limit(top_n)
+        )
+        detailed = invalid if detailed is None else detailed.unionByName(invalid)
+
+    if detailed is None:
+        return df.sparkSession.createDataFrame(
+            [],
+            "column_name string, pattern string, non_matching_value string, non_matching_count long",
+        )
+
+    return (
+        detailed
+        .orderBy(F.col("_rule_order"), F.col("non_matching_count").desc())
+        .drop("_rule_order")
+    )
+
+
+def row_level_rules(
+    df: DataFrame,
+    rules: Dict[str, str],
+    show_summary_only: bool = True,
+    top_n: int = 10,
+) -> DataFrame:
+    """
+    Validate rows against one or more Spark SQL boolean expressions.
+
+    Args:
+        df: DataFrame to validate
+        rules: Mapping of rule_name -> Spark SQL boolean expression
+        show_summary_only: If True, returns one-row summary per rule.
+                          If False, returns failing row representations (default: True)
+        top_n: Number of top failing row representations to show per rule when
+               show_summary_only=False (default: 10)
+
+    Returns:
+        If show_summary_only=True:
+            DataFrame with one row per checked rule:
+            - column_name (rule_name)
+            - pattern (rule_expression)
+            - total_rows
+            - matching_rows
+            - non_matching_rows
+            - match_percentage
+
+        If show_summary_only=False:
+            DataFrame with failing row representations:
+            - column_name (rule_name)
+            - pattern (rule_expression)
+            - non_matching_value (JSON representation of row)
+            - non_matching_count
+    """
+    if not rules:
+        raise ValueError("rules must be a non-empty dict of rule_name -> expression")
+
+    for rule_name, rule_expr in rules.items():
+        if not rule_name or not isinstance(rule_name, str):
+            raise ValueError("Each rule name must be a non-empty string")
+        if not rule_expr or not isinstance(rule_expr, str):
+            raise ValueError("Each rule expression must be a non-empty string")
+
+    total_rows = df.count()
+
+    # Rule is considered matching only when expression evaluates to True.
+    # False/NULL are treated as non-matching, same semantics as regex_check.
+    match_exprs = {
+        rule_name: F.when(F.expr(rule_expr), 1).otherwise(0)
+        for rule_name, rule_expr in rules.items()
+    }
+
+    if show_summary_only:
+        agg_exprs = [F.sum(expr).alias(rule_name) for rule_name, expr in match_exprs.items()]
+        agg_result = df.select(agg_exprs).collect()[0].asDict()
+
+        summary_rows = [
+            (
+                rule_name,
+                rule_expr,
+                total_rows,
+                agg_result.get(rule_name) or 0,
+                total_rows - (agg_result.get(rule_name) or 0),
+                round(((agg_result.get(rule_name) or 0) / total_rows * 100) if total_rows > 0 else 0.0, 4),
+            )
+            for rule_name, rule_expr in rules.items()
+        ]
+
+        return df.sparkSession.createDataFrame(
+            summary_rows,
+            [
+                "column_name",
+                "pattern",
+                "total_rows",
+                "matching_rows",
+                "non_matching_rows",
+                "match_percentage",
+            ],
+        )
+
+    # Detailed mode: return failing rows and their frequency
+    detailed = None
+    if df.columns:
+        row_repr_expr = F.to_json(F.struct(*[F.col(c) for c in df.columns]))
+    else:
+        row_repr_expr = F.lit("{}")
+
+    for rule_order, (rule_name, rule_expr) in enumerate(rules.items()):
+        condition = F.expr(rule_expr)
+        invalid = (
+            df.filter(~condition | condition.isNull())
+            .select(row_repr_expr.alias("non_matching_value"))
+            .na.fill({"non_matching_value": "<NULL>"})
+            .groupBy("non_matching_value")
+            .agg(F.count("*").alias("non_matching_count"))
+            .withColumn("column_name", F.lit(rule_name))
+            .withColumn("pattern", F.lit(rule_expr))
+            .withColumn("_rule_order", F.lit(rule_order))
+            .select("column_name", "pattern", "non_matching_value", "non_matching_count", "_rule_order")
+            .orderBy(F.col("non_matching_count").desc())
+            .limit(top_n)
+        )
+        detailed = invalid if detailed is None else detailed.unionByName(invalid)
+
+    if detailed is None:
+        return df.sparkSession.createDataFrame(
+            [],
+            "column_name string, pattern string, non_matching_value string, non_matching_count long",
+        )
+
+    return (
+        detailed
+        .orderBy(F.col("_rule_order"), F.col("non_matching_count").desc())
+        .drop("_rule_order")
+    )

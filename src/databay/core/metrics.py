@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
@@ -444,3 +444,96 @@ def numeric_diff_check(
                 output_cols.append(f"{col}_pct_diff")
 
         return detailed.select(output_cols)
+
+
+def find_key_set(
+    tables: Dict[str, DataFrame],
+    keys_df: DataFrame,
+    key_column: str,
+    candidate_columns: Optional[List[str]] = None,
+) -> DataFrame:
+    """
+    Search multiple tables/columns for a provided set of key values.
+
+    Args:
+        tables: Mapping of table_name -> DataFrame to inspect
+        keys_df: DataFrame containing keys to search for
+        key_column: Column in keys_df that contains key values
+        candidate_columns: Optional explicit column list to check in each table.
+                          If None, all columns in each table are checked.
+
+    Returns:
+        DataFrame with one row per checked table/column:
+        - table_name
+        - column_name
+        - total_keys
+        - matched_count
+        - missing_count
+        - coverage_pct
+    """
+    if not tables:
+        raise ValueError("tables must be a non-empty dict of table_name -> DataFrame")
+    if not isinstance(key_column, str) or not key_column:
+        raise ValueError("key_column must be a non-empty string")
+    if key_column not in keys_df.columns:
+        raise ValueError(f"Column '{key_column}' not found in keys_df")
+
+    first_df = next(iter(tables.values()))
+    spark = keys_df.sparkSession if keys_df.sparkSession is not None else first_df.sparkSession
+
+    search_keys_df = (
+        keys_df
+        .select(F.col(key_column).cast("string").alias("key_value"))
+        .where(F.col("key_value").isNotNull())
+        .distinct()
+    )
+    total_keys = search_keys_df.count()
+    if total_keys == 0:
+        raise ValueError("keys_df must contain at least one non-null key value")
+
+    result_rows = []
+
+    for table_name, df in tables.items():
+        cols_to_check = candidate_columns if candidate_columns is not None else df.columns
+
+        for col_name in cols_to_check:
+            if col_name not in df.columns:
+                continue
+
+            column_values = (
+                df.select(F.col(col_name).cast("string").alias("key_value"))
+                .where(F.col("key_value").isNotNull())
+                .distinct()
+            )
+
+            matched_count = search_keys_df.join(
+                broadcast(column_values),
+                on="key_value",
+                how="inner",
+            ).count()
+            missing_count = total_keys - matched_count
+
+            coverage_pct = round((matched_count / total_keys * 100) if total_keys > 0 else 0.0, 4)
+
+            result_rows.append(
+                (
+                    table_name,
+                    col_name,
+                    total_keys,
+                    matched_count,
+                    missing_count,
+                    coverage_pct,
+                )
+            )
+
+    return spark.createDataFrame(
+        result_rows,
+        [
+            "table_name",
+            "column_name",
+            "total_keys",
+            "matched_count",
+            "missing_count",
+            "coverage_pct",
+        ],
+    )
