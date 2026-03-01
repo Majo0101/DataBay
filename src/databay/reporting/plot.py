@@ -1,7 +1,25 @@
-from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
+import math
+from typing import Dict, List, Literal, Mapping, Optional, Sequence, SupportsFloat, Tuple, TypedDict, Union
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objs as go
+
+
+class OverlapInput(TypedDict):
+    left_count: SupportsFloat
+    right_count: SupportsFloat
+    overlap_count: SupportsFloat
+
+
+def _coerce_finite_float(value: object, field_name: str) -> float:
+    """Convert a numeric-like value to float and reject NaN/inf."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{field_name}' must be numeric") from None
+    if not math.isfinite(out):
+        raise ValueError(f"'{field_name}' must be a finite number")
+    return out
 
 
 def _to_pandas(df: Union[pd.DataFrame, 'DataFrame']) -> pd.DataFrame:
@@ -96,12 +114,59 @@ def _prepare_plot_df(
     return plot_df
 
 
+def dataframe_to_dict(
+    df: Union[pd.DataFrame, "DataFrame"],
+    key_col: str,
+    value_col: str,
+    duplicate_policy: Literal["error", "first", "last"] = "error",
+) -> Dict[str, float]:
+    """
+    Convert a two-column DataFrame into a dictionary mapping key -> numeric value.
+
+    Works with both Pandas and PySpark DataFrames.
+
+    duplicate_policy:
+    - "error": raise when duplicate keys are found
+    - "first": keep first occurrence of each key
+    - "last": keep last occurrence of each key
+    """
+    pdf = _to_pandas(df)
+
+    if key_col not in pdf.columns:
+        raise ValueError(f"Column '{key_col}' not found in DataFrame")
+    if value_col not in pdf.columns:
+        raise ValueError(f"Column '{value_col}' not found in DataFrame")
+    if duplicate_policy not in {"error", "first", "last"}:
+        raise ValueError("duplicate_policy must be one of: 'error', 'first', 'last'")
+
+    work = pdf[[key_col, value_col]].copy()
+    work[key_col] = work[key_col].astype(str).str.strip()
+    if (work[key_col] == "").any():
+        raise ValueError(f"Column '{key_col}' contains empty key values")
+
+    work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+    if work[value_col].isna().any():
+        raise ValueError(f"Column '{value_col}' contains non-numeric values")
+    if not work[value_col].map(math.isfinite).all():
+        raise ValueError(f"Column '{value_col}' must contain finite numbers")
+
+    if duplicate_policy == "error":
+        dupes = work[work[key_col].duplicated(keep=False)][key_col].unique().tolist()
+        if dupes:
+            sample = ", ".join(map(str, dupes[:5]))
+            raise ValueError(f"Duplicate keys found in '{key_col}': {sample}")
+    elif duplicate_policy == "first":
+        work = work.drop_duplicates(subset=[key_col], keep="first")
+    else:
+        work = work.drop_duplicates(subset=[key_col], keep="last")
+
+    return dict(zip(work[key_col].tolist(), work[value_col].astype(float).tolist()))
+
+
 def plot_match_percentage(
-    df: Union[pd.DataFrame, 'DataFrame'],
+    data: Mapping[str, SupportsFloat],
     title: str = 'Column Match Percentage: PROD vs TEST',
     height: int = 600,
-    column_col: str = 'column',
-    match_col: str = 'match_%',
     show_figure: bool = False,
     x_range: Optional[Tuple[int, int]] = None,
     margin_left: int = 200,
@@ -122,26 +187,20 @@ def plot_match_percentage(
     Colors range from red (critical quality issues) to green (perfect match), following
     data testing best practices for quality thresholds.
     
-    **Accepts both Pandas and PySpark DataFrames** - automatically converts PySpark to Pandas.
+    Expects a dictionary mapping column name -> match value.
     
     Parameters
     ----------
-    df : Union[pd.DataFrame, pyspark.sql.DataFrame]
-        DataFrame containing columns for comparison results.
-        Accepts both Pandas DataFrames and PySpark DataFrames.
-        Must have columns specified by `column_col` and `match_col`.
+    data : Mapping[str, SupportsFloat]
+        Mapping of column name to match value.
     title : str, optional
         Chart title, by default 'Column Match Percentage: PROD vs TEST'
     height : int, optional
         Chart height in pixels, by default 600
-    column_col : str, optional
-        Name of the column containing column names, by default 'column'
-    match_col : str, optional
-        Name of the column containing match percentages, by default 'match_%'
     show_figure : bool, optional
         If True, displays the figure immediately, by default False
     x_range : Optional[Tuple[int, int]], optional
-        Custom x-axis range as (min, max), by default (0, 105)
+        Custom x-axis range as (min, max), by default (0, 115)
     margin_left : int, optional
         Left margin in pixels for y-axis labels, by default 200
     value_mode : Literal["auto", "percent", "ratio"], optional
@@ -175,48 +234,36 @@ def plot_match_percentage(
     Raises
     ------
     ValueError
-        If required columns are not present in the DataFrame
-    TypeError
-        If input is not a supported DataFrame type
+        If input dictionary is empty, has empty keys, or contains non-finite values.
     
     Examples
     --------
-    >>> import pandas as pd
-    >>> 
-    >>> # Works with Pandas DataFrames
-    >>> df_pandas = pd.DataFrame({
-    ...     'column': ['col1', 'col2', 'col3'],
-    ...     'match_%': [100.0, 95.5, 89.2]
-    ... })
-    >>> fig = plot_match_percentage(df_pandas)
-    >>> fig.show()
-    
-    >>> # Works with PySpark DataFrames (auto-converts)
-    >>> df_spark = spark.createDataFrame(df_pandas)
-    >>> fig = plot_match_percentage(df_spark)  # Auto-converts to Pandas
+    >>> match_data = {"col1": 100.0, "col2": 95.5, "col3": 89.2}
+    >>> fig = plot_match_percentage(match_data)
     >>> fig.show()
     
     >>> # With custom parameters
     >>> fig = plot_match_percentage(
-    ...     df_pandas,
+    ...     match_data,
     ...     title='Data Quality Check',
     ...     height=800,
     ...     show_figure=True
     ... )
     """
-    # Convert to Pandas if needed (handles PySpark DataFrames)
-    df = _to_pandas(df)
-    
-    # Validate required columns
-    if column_col not in df.columns:
-        raise ValueError(f"Column '{column_col}' not found in DataFrame")
-    if match_col not in df.columns:
-        raise ValueError(f"Column '{match_col}' not found in DataFrame")
+    if not data:
+        raise ValueError("Input 'data' must not be empty")
+
+    columns = [str(k) for k in data.keys()]
+    if any(not c.strip() for c in columns):
+        raise ValueError("All keys in 'data' must be non-empty strings")
+
+    values = [_coerce_finite_float(v, f"data['{columns[i]}']") for i, v in enumerate(data.values())]
+    plot_df = pd.DataFrame({"column": columns, "match_%": values})
     
     plot_df = _prepare_plot_df(
-        df=df,
-        column_col=column_col,
-        match_col=match_col,
+        df=plot_df,
+        column_col="column",
+        match_col="match_%",
         value_mode=value_mode,
         sort=sort,
         ascending=ascending,
@@ -235,13 +282,13 @@ def plot_match_percentage(
     # Create the bar chart
     fig = px.bar(
         plot_df,
-        y=column_col,
-        x=match_col,
+        y="column",
+        x="match_%",
         orientation='h',
-        text=match_col,
-        color=match_col,
+        text="match_%",
+        color="match_%",
         color_continuous_scale=color_scale,
-        labels={match_col: metric_label, column_col: 'Column Name'},
+        labels={"match_%": metric_label, "column": 'Column Name'},
         title=f'<b>{title}</b>',
         height=height,
         range_color=[0, 100]
@@ -276,7 +323,7 @@ def plot_match_percentage(
         yaxis=dict(
             showgrid=False,
             categoryorder='array',
-            categoryarray=plot_df[column_col].tolist(),
+            categoryarray=plot_df["column"].tolist(),
             title='Column Name',
             title_font=dict(size=13)
         ),
@@ -318,7 +365,7 @@ def plot_match_percentage(
 
 
 def plot_match_percentage_sorted(
-    df: Union[pd.DataFrame, 'DataFrame'],
+    data: Mapping[str, SupportsFloat],
     title: str = 'Column Match Percentage: PROD vs TEST (Sorted)',
     ascending: bool = True,
     **kwargs
@@ -326,14 +373,12 @@ def plot_match_percentage_sorted(
     """
     Create a sorted horizontal bar chart showing match percentages.
     
-    This is a convenience function that sorts the data before plotting.
-    **Accepts both Pandas and PySpark DataFrames** - automatically converts PySpark to Pandas.
+    This is a convenience function that sorts the dictionary input before plotting.
     
     Parameters
     ----------
-    df : Union[pd.DataFrame, pyspark.sql.DataFrame]
-        DataFrame containing comparison results.
-        Accepts both Pandas DataFrames and PySpark DataFrames.
+    data : Mapping[str, SupportsFloat]
+        Mapping of column name to match value.
     title : str, optional
         Chart title, by default includes '(Sorted)'
     ascending : bool, optional
@@ -348,22 +393,19 @@ def plot_match_percentage_sorted(
     
     Examples
     --------
-    >>> # Works with both Pandas and PySpark DataFrames
-    >>> fig = plot_match_percentage_sorted(df, ascending=False)  # Highest first
-    >>> fig = plot_match_percentage_sorted(spark_df, ascending=True)  # Lowest first
+    >>> fig = plot_match_percentage_sorted({"col1": 99.0, "col2": 87.5}, ascending=False)
     """
     kwargs.setdefault("sort", True)
     kwargs.setdefault("ascending", ascending)
-    return plot_match_percentage(df, title=title, **kwargs)
+    return plot_match_percentage(data, title=title, **kwargs)
 
 
 def plot_overlap(
-    df: Union[pd.DataFrame, "DataFrame"],
+    data: Union[OverlapInput, Mapping[str, object]],
     title: str = "Overlap Comparison",
-    label_col: str = "label",
-    left_count_col: str = "left_count",
-    right_count_col: str = "right_count",
-    overlap_count_col: str = "overlap_count",
+    left_count_key: str = "left_count",
+    right_count_key: str = "right_count",
+    overlap_count_key: str = "overlap_count",
     left_name: str = "Left",
     right_name: str = "Right",
     show_figure: bool = False,
@@ -373,141 +415,201 @@ def plot_overlap(
     right_only_color: str = "#e53935",
 ) -> go.Figure:
     """
-    Plot overlap as two stacked horizontal bars (left/right) per label.
+    Two-bar funnel-style overlap chart for dataset A vs dataset B.
 
-    Expects a summary table with counts:
-    - label
-    - left_count
-    - right_count
-    - overlap_count
+    Expects a dictionary with three numeric values:
+    - `left_count` (or custom `left_count_key`)
+    - `right_count` (or custom `right_count_key`)
+    - `overlap_count` (or custom `overlap_count_key`)
+
+    The chart contains two horizontal stacked bars:
+    - Bar for dataset A (`left_name`): overlap (green) + only A (yellow)
+    - Bar for dataset B (`right_name`): overlap (green) + only B (red)
+
+    Parameters
+    ----------
+    data : Mapping[str, object]
+        Dictionary with overlap summary counts.
+    title : str
+        Chart title.
+    left_count_key : str
+        Key name for dataset A total count in `data`.
+    right_count_key : str
+        Key name for dataset B total count in `data`.
+    overlap_count_key : str
+        Key name for overlap/matched count in `data`.
+    left_name : str
+        Display name for dataset A (left side).
+    right_name : str
+        Display name for dataset B (right side).
+    show_figure : bool
+        If True, calls ``fig.show()`` before returning.
+    height : int
+        Chart height in pixels.
+    overlap_color : str
+        Hex color for overlap/matched segment (default green).
+    left_only_color : str
+        Hex color for rows exclusive to dataset A (default yellow).
+    right_only_color : str
+        Hex color for rows exclusive to dataset B (default red).
+
+    Returns
+    -------
+    plotly.graph_objs.Figure
+
+    Raises
+    ------
+    ValueError
+        If required keys are missing, contain non-numeric values,
+        negative values, or if overlap > either side's total.
     """
-    pdf = _to_pandas(df)
-
-    required = [label_col, left_count_col, right_count_col, overlap_count_col]
-    missing = [c for c in required if c not in pdf.columns]
+    required = [left_count_key, right_count_key, overlap_count_key]
+    missing = [k for k in required if k not in data]
     if missing:
-        raise ValueError(f"Missing required column(s): {', '.join(missing)}")
+        raise ValueError(f"Missing required key(s): {', '.join(missing)}")
 
-    work = pdf.copy()
-    for col in [left_count_col, right_count_col, overlap_count_col]:
-        work[col] = pd.to_numeric(work[col], errors="coerce")
-        if work[col].isna().any():
-            raise ValueError(f"Column '{col}' contains non-numeric values")
-        if (work[col] < 0).any():
-            raise ValueError(f"Column '{col}' must be >= 0")
+    try:
+        left_total = _coerce_finite_float(data[left_count_key], left_count_key)
+        right_total = _coerce_finite_float(data[right_count_key], right_count_key)
+        overlap_total = _coerce_finite_float(data[overlap_count_key], overlap_count_key)
+    except KeyError:
+        # Defensive fallback, should not happen due to explicit missing check above.
+        raise ValueError("Missing required key(s) in input data") from None
 
-    if (work[overlap_count_col] > work[left_count_col]).any() or (work[overlap_count_col] > work[right_count_col]).any():
-        raise ValueError("overlap_count cannot be greater than left_count/right_count")
+    if left_total < 0:
+        raise ValueError(f"'{left_count_key}' must be >= 0")
+    if right_total < 0:
+        raise ValueError(f"'{right_count_key}' must be >= 0")
+    if overlap_total < 0:
+        raise ValueError(f"'{overlap_count_key}' must be >= 0")
 
-    work["left_only"] = work[left_count_col] - work[overlap_count_col]
-    work["right_only"] = work[right_count_col] - work[overlap_count_col]
-
-    rows = []
-    for _, r in work.iterrows():
-        label = str(r[label_col])
-        overlap = float(r[overlap_count_col])
-        left_only = float(r["left_only"])
-        right_only = float(r["right_only"])
-        left_total = float(r[left_count_col])
-        right_total = float(r[right_count_col])
-
-        rows.append(
-            {
-                "row": f"{label} | {left_name}",
-                "side": left_name,
-                "overlap": overlap,
-                "only": left_only,
-                "total": left_total,
-                "only_type": "left",
-            }
-        )
-        rows.append(
-            {
-                "row": f"{label} | {right_name}",
-                "side": right_name,
-                "overlap": overlap,
-                "only": right_only,
-                "total": right_total,
-                "only_type": "right",
-            }
+    if overlap_total > left_total or overlap_total > right_total:
+        raise ValueError(
+            f"'{overlap_count_key}' cannot be greater than '{left_count_key}' or '{right_count_key}'"
         )
 
-    bars = pd.DataFrame(rows)
+    left_only_total = left_total - overlap_total
+    right_only_total = right_total - overlap_total
+
+    y_labels = [left_name, right_name]
+    max_val = max(left_total, right_total, 1.0)
+    left_overlap_pct = overlap_total / left_total * 100 if left_total else 0.0
+    right_overlap_pct = overlap_total / right_total * 100 if right_total else 0.0
 
     fig = go.Figure()
+
     fig.add_bar(
         name="Overlap",
-        y=bars["row"],
-        x=bars["overlap"],
+        y=y_labels,
+        x=[overlap_total, overlap_total],
         orientation="h",
         marker_color=overlap_color,
-        hovertemplate="<b>%{y}</b><br>Overlap: %{x:,.0f}<extra></extra>",
+        marker_line_width=0,
+        hovertemplate=[
+            (
+                f"<b>{left_name}</b><br>"
+                f"Total: {left_total:,.0f}<br>"
+                f"Overlap: {overlap_total:,.0f} ({left_overlap_pct:.1f}%)<extra></extra>"
+            ),
+            (
+                f"<b>{right_name}</b><br>"
+                f"Total: {right_total:,.0f}<br>"
+                f"Overlap: {overlap_total:,.0f} ({right_overlap_pct:.1f}%)<extra></extra>"
+            ),
+        ],
     )
 
     fig.add_bar(
         name=f"Only in {left_name}",
-        y=bars["row"],
-        x=bars.apply(lambda r: r["only"] if r["only_type"] == "left" else 0.0, axis=1),
+        y=y_labels,
+        x=[left_only_total, 0],
         orientation="h",
         marker_color=left_only_color,
-        hovertemplate="<b>%{y}</b><br>Only: %{x:,.0f}<extra></extra>",
+        marker_line_width=0,
+        hovertemplate=[
+            (
+                f"<b>{left_name}</b><br>"
+                f"Only in {left_name}: {left_only_total:,.0f}<extra></extra>"
+            ),
+            "<extra></extra>",
+        ],
     )
 
     fig.add_bar(
         name=f"Only in {right_name}",
-        y=bars["row"],
-        x=bars.apply(lambda r: r["only"] if r["only_type"] == "right" else 0.0, axis=1),
+        y=y_labels,
+        x=[0, right_only_total],
         orientation="h",
         marker_color=right_only_color,
-        hovertemplate="<b>%{y}</b><br>Only: %{x:,.0f}<extra></extra>",
+        marker_line_width=0,
+        hovertemplate=[
+            "<extra></extra>",
+            (
+                f"<b>{right_name}</b><br>"
+                f"Only in {right_name}: {right_only_total:,.0f}<extra></extra>"
+            ),
+        ],
     )
 
-    max_total = float(bars["total"].max()) if len(bars) > 0 else 1.0
-    for _, r in bars.iterrows():
-        overlap_pct = (r["overlap"] / r["total"] * 100) if r["total"] > 0 else 0.0
-        fig.add_annotation(
-            x=r["total"],
-            y=r["row"],
-            text=f"Total: {r['total']:,.0f} | Overlap: {overlap_pct:.1f}%",
-            showarrow=False,
-            xanchor="left",
-            xshift=6,
-            font=dict(size=11, color="#424242"),
-        )
-
     fig.update_layout(
-        title=f"<b>{title}</b>",
+        title=dict(text=f"<b>{title}</b>", font=dict(size=15)),
         barmode="stack",
-        height=height,
+        height=max(height, 280),
         plot_bgcolor="white",
         paper_bgcolor="white",
         font=dict(size=12, family="Arial, sans-serif"),
-        margin=dict(l=220, r=120, t=60, b=50),
+        margin=dict(l=40, r=40, t=70, b=50),
+        bargap=0.45,
         xaxis=dict(
-            title="Count",
             showgrid=True,
-            gridcolor="lightgray",
-            range=[0, max_total * 1.25],
+            gridcolor="#eeeeee",
+            zeroline=True,
+            zerolinecolor="#616161",
+            zerolinewidth=1,
+            range=[0, max_val * 1.15],
+            tickformat=",",
+            title="Row count",
         ),
         yaxis=dict(
             showgrid=False,
             categoryorder="array",
-            categoryarray=bars["row"].tolist(),
+            categoryarray=[right_name, left_name],
         ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
         modebar=dict(
             remove=[
-                "zoom2d",
-                "pan2d",
-                "select2d",
-                "lasso2d",
-                "autoScale2d",
-                "resetScale2d",
-                "toggleSpikelines",
-                "hoverCompareCartesian",
-                "hoverClosestCartesian",
+                "zoom2d", "pan2d", "select2d", "lasso2d",
+                "autoScale2d", "resetScale2d",
+                "toggleSpikelines", "hoverCompareCartesian", "hoverClosestCartesian",
             ]
         ),
+    )
+
+    fig.update_traces(texttemplate="%{x:,.0f}", textposition="inside")
+
+    fig.add_annotation(
+        x=left_total,
+        y=left_name,
+        text=f"Total: {left_total:,.0f}",
+        showarrow=False,
+        xanchor="left",
+        xshift=6,
+        font=dict(size=10, color="#424242"),
+    )
+    fig.add_annotation(
+        x=right_total,
+        y=right_name,
+        text=f"Total: {right_total:,.0f}",
+        showarrow=False,
+        xanchor="left",
+        xshift=6,
+        font=dict(size=10, color="#424242"),
     )
 
     if show_figure:
