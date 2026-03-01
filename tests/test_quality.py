@@ -2,6 +2,8 @@ import pytest
 from pyspark.sql import Row
 
 from databay import (
+    cardinality_check,
+    cardinality_check_tables,
     duplicate_check,
     null_rate,
     pk_uniqueness_check,
@@ -441,3 +443,304 @@ def test_row_level_rules_detailed_handles_complex_types_json(spark):
     assert '"id":1' in value
     assert '"tags":["a","b"]' in value
     assert '"meta":{"k":"v"}' in value
+
+
+def test_cardinality_check_summary_classifies_1_to_1(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L2", b="R2"),
+            Row(a="L3", b="R3"),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True).collect()[0]
+    assert row["distinct_left"] == 3
+    assert row["distinct_right"] == 3
+    assert row["distinct_pairs"] == 3
+    assert row["left_to_right_max"] == 1
+    assert row["right_to_left_max"] == 1
+    assert row["relationship_type"] == "1:1"
+
+
+def test_cardinality_check_summary_classifies_1_to_n(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L1", b="R2"),
+            Row(a="L2", b="R3"),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True).collect()[0]
+    assert row["left_to_right_max"] == 2
+    assert row["right_to_left_max"] == 1
+    assert row["relationship_type"] == "1:N"
+
+
+def test_cardinality_check_summary_classifies_n_to_1(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L2", b="R1"),
+            Row(a="L3", b="R2"),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True).collect()[0]
+    assert row["left_to_right_max"] == 1
+    assert row["right_to_left_max"] == 2
+    assert row["relationship_type"] == "N:1"
+
+
+def test_cardinality_check_summary_classifies_n_to_n(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L1", b="R2"),
+            Row(a="L2", b="R1"),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True).collect()[0]
+    assert row["left_to_right_max"] == 2
+    assert row["right_to_left_max"] == 2
+    assert row["relationship_type"] == "N:N"
+
+
+def test_cardinality_check_summary_handles_empty_non_null_pairs(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a=None, b="R1"),
+            Row(a="L1", b=None),
+            Row(a=None, b=None),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True).collect()[0]
+    assert row["total_rows"] == 3
+    assert row["non_null_pair_rows"] == 0
+    assert row["relationship_type"] == "EMPTY"
+
+
+def test_cardinality_check_detailed_returns_top_violations(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L1", b="R2"),
+            Row(a="L2", b="R1"),
+            Row(a="L3", b="R3"),
+        ]
+    )
+
+    rows = cardinality_check(
+        df,
+        "a",
+        "b",
+        show_summary_only=False,
+        top_n=10,
+    ).collect()
+
+    assert any(r["a"] == "L1" and r["b"] == "R1" and r["rows_in_left"] == 2 and r["rows_in_right"] == 2 for r in rows)
+    assert any(r["a"] == "L1" and r["b"] == "R2" and r["rows_in_left"] == 2 and r["rows_in_right"] == 1 for r in rows)
+    assert any(r["a"] == "L2" and r["b"] == "R1" and r["rows_in_left"] == 1 and r["rows_in_right"] == 2 for r in rows)
+
+
+def test_cardinality_check_raises_for_invalid_input(spark):
+    df = spark.createDataFrame([Row(a="L1", b="R1")])
+
+    with pytest.raises(ValueError, match="Column 'missing_left' not found"):
+        cardinality_check(df, "missing_left", "b")
+
+    with pytest.raises(ValueError, match="Column 'missing_right' not found"):
+        cardinality_check(df, "a", "missing_right")
+
+    with pytest.raises(ValueError, match="top_n must be >= 0"):
+        cardinality_check(df, "a", "b", show_summary_only=False, top_n=-1)
+
+    with pytest.raises(ValueError, match="summary_view must be 'full' or 'short'"):
+        cardinality_check(df, "a", "b", show_summary_only=True, summary_view="compact")
+
+
+def test_cardinality_check_supports_multi_column_input(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a1="L1", a2="X", b1="R1", b2="P"),
+            Row(a1="L1", a2="X", b1="R2", b2="Q"),
+            Row(a1="L2", a2="Y", b1="R3", b2="Z"),
+        ]
+    )
+
+    row = cardinality_check(df, ["a1", "a2"], ["b1", "b2"], show_summary_only=True).collect()[0]
+    assert row["col_left"] == "a1,a2"
+    assert row["col_right"] == "b1,b2"
+    assert row["relationship_type"] == "1:N"
+
+    detail = cardinality_check(df, ["a1", "a2"], ["b1", "b2"], show_summary_only=False, top_n=10).collect()
+    assert any(r["a1"] == "L1" and r["a2"] == "X" and r["rows_in_left"] == 2 for r in detail)
+    assert any(r["b1"] == "R1" and r["b2"] == "P" for r in detail)
+
+
+def test_cardinality_check_short_summary_view(spark):
+    df = spark.createDataFrame(
+        [
+            Row(a="L1", b="R1"),
+            Row(a="L1", b="R2"),
+            Row(a="L2", b="R3"),
+        ]
+    )
+
+    row = cardinality_check(df, "a", "b", show_summary_only=True, summary_view="short").collect()[0]
+    assert row["total_rows"] == 3
+    assert row["non_null_pair_rows"] == 3
+    assert row["distinct_pairs"] == 3
+    assert row["relationship_type"] == "1:N"
+
+
+def test_cardinality_check_tables_summary_and_detail(spark):
+    df_a = spark.createDataFrame(
+        [
+            Row(k="K1"),
+            Row(k="K1"),
+            Row(k="K2"),
+            Row(k="K3"),
+        ]
+    )
+    df_b = spark.createDataFrame(
+        [
+            Row(ref="K1"),
+            Row(ref="K2"),
+            Row(ref="K2"),
+            Row(ref="K4"),
+        ]
+    )
+
+    summary = cardinality_check_tables(
+        df_a,
+        df_b,
+        cols_a="k",
+        cols_b="ref",
+        show_summary_only=True,
+        name_a="left",
+        name_b="right",
+    ).collect()[0]
+    assert summary["distinct_keys_left"] == 3
+    assert summary["distinct_keys_right"] == 3
+    assert summary["overlap_distinct_keys"] == 2
+    assert summary["relationship_type"] == "N:N"
+
+    detail = cardinality_check_tables(
+        df_a,
+        df_b,
+        cols_a="k",
+        cols_b="ref",
+        show_summary_only=False,
+        name_a="left",
+        name_b="right",
+        top_n=10,
+    ).collect()
+    assert len(detail) == 2
+    assert any(r["k"] == "K1" and r["rows_in_left"] == 2 and r["rows_in_right"] == 1 for r in detail)
+    assert any(r["k"] == "K2" and r["rows_in_left"] == 1 and r["rows_in_right"] == 2 for r in detail)
+
+
+def test_cardinality_check_tables_supports_multi_column_keys(spark):
+    df_a = spark.createDataFrame(
+        [
+            Row(k1="A", k2="1"),
+            Row(k1="A", k2="1"),
+            Row(k1="B", k2="2"),
+        ]
+    )
+    df_b = spark.createDataFrame(
+        [
+            Row(r1="A", r2="1"),
+            Row(r1="B", r2="2"),
+        ]
+    )
+
+    row = cardinality_check_tables(
+        df_a,
+        df_b,
+        cols_a=["k1", "k2"],
+        cols_b=["r1", "r2"],
+        show_summary_only=True,
+    ).collect()[0]
+    assert row["cols_a"] == "k1,k2"
+    assert row["cols_b"] == "r1,r2"
+    assert row["relationship_type"] == "N:1"
+
+
+def test_cardinality_check_tables_detail_returns_key_columns_not_key_value(spark):
+    df_a = spark.createDataFrame(
+        [
+            Row(id="1", type="A"),
+            Row(id="1", type="A"),
+            Row(id="2", type="B"),
+        ]
+    )
+    df_b = spark.createDataFrame(
+        [
+            Row(id_ref="1", type_ref="A"),
+            Row(id_ref="2", type_ref="B"),
+            Row(id_ref="2", type_ref="B"),
+        ]
+    )
+
+    rows = cardinality_check_tables(
+        df_a,
+        df_b,
+        cols_a=["id", "type"],
+        cols_b=["id_ref", "type_ref"],
+        show_summary_only=False,
+        name_a="left",
+        name_b="right",
+        top_n=10,
+    ).collect()
+
+    assert rows[0].asDict().get("id") is not None
+    assert rows[0].asDict().get("type") is not None
+    assert "key_value" not in rows[0].asDict()
+    assert any(r["id"] == "1" and r["type"] == "A" for r in rows)
+    assert any(r["id"] == "2" and r["type"] == "B" for r in rows)
+
+
+def test_cardinality_check_tables_raises_for_invalid_input(spark):
+    df_a = spark.createDataFrame([Row(a="X")])
+    df_b = spark.createDataFrame([Row(b="X")])
+
+    with pytest.raises(ValueError, match="Column 'missing' not found in df_a"):
+        cardinality_check_tables(df_a, df_b, cols_a="missing", cols_b="b")
+
+    with pytest.raises(ValueError, match="Column 'missing' not found in df_b"):
+        cardinality_check_tables(df_a, df_b, cols_a="a", cols_b="missing")
+
+    with pytest.raises(ValueError, match="top_n must be >= 0"):
+        cardinality_check_tables(df_a, df_b, cols_a="a", cols_b="b", show_summary_only=False, top_n=-1)
+
+    with pytest.raises(ValueError, match="same number of columns"):
+        cardinality_check_tables(df_a, df_b, cols_a=["a", "x"], cols_b="b")
+
+    with pytest.raises(ValueError, match="summary_view must be 'full' or 'short'"):
+        cardinality_check_tables(df_a, df_b, cols_a="a", cols_b="b", summary_view="compact")
+
+
+def test_cardinality_check_tables_short_summary_and_custom_names(spark):
+    df_a = spark.createDataFrame([Row(id="1"), Row(id="2"), Row(id="2")])
+    df_b = spark.createDataFrame([Row(id="2"), Row(id="3")])
+
+    row = cardinality_check_tables(
+        df_a,
+        df_b,
+        cols_a="id",
+        cols_b="id",
+        show_summary_only=True,
+        summary_view="short",
+        name_a="orders raw",
+        name_b="master",
+    ).collect()[0]
+
+    assert row["total_rows_orders_raw"] == 3
+    assert row["total_rows_master"] == 2
+    assert row["overlap_distinct_keys"] == 1
+    assert row["relationship_type"] == "N:1"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pyspark.sql import DataFrame
 
@@ -36,5 +36,28 @@ def row_level_rules(
     df: DataFrame,
     rules: Dict[str, str],
     show_summary_only: bool = True,
+    top_n: int = 10,
+) -> DataFrame: ...
+
+
+def cardinality_check(
+    df: DataFrame,
+    col_left: Union[str, List[str]],
+    col_right: Union[str, List[str]],
+    show_summary_only: bool = True,
+    summary_view: str = "full",
+    top_n: int = 10,
+) -> DataFrame: ...
+
+
+def cardinality_check_tables(
+    df_a: DataFrame,
+    df_b: DataFrame,
+    cols_a: Union[str, List[str]],
+    cols_b: Union[str, List[str]],
+    show_summary_only: bool = True,
+    summary_view: str = "full",
+    name_a: str = "a",
+    name_b: str = "b",
     top_n: int = 10,
 ) -> DataFrame: ...

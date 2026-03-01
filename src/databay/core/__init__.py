@@ -16,6 +16,8 @@ from databay.core.quality import (
     duplicate_check,
     regex_check,
     row_level_rules,
+    cardinality_check,
+    cardinality_check_tables,
 )
 
 __all__ = [
@@ -31,4 +33,6 @@ __all__ = [
     "duplicate_check",
     "regex_check",
     "row_level_rules",
+    "cardinality_check",
+    "cardinality_check_tables",
 ]

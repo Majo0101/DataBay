@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
@@ -464,3 +464,391 @@ def row_level_rules(
         .orderBy(F.col("_rule_order"), F.col("non_matching_count").desc())
         .drop("_rule_order")
     )
+
+
+def cardinality_check(
+    df: DataFrame,
+    col_left: Union[str, List[str]],
+    col_right: Union[str, List[str]],
+    show_summary_only: bool = True,
+    summary_view: str = "full",
+    top_n: int = 10,
+) -> DataFrame:
+    """
+    Profile cardinality relationship between two columns.
+
+    Args:
+        df: DataFrame to analyze
+        col_left: Left column name(s)
+        col_right: Right column name(s)
+        show_summary_only: If True, returns one-row summary with relationship class.
+                          If False, returns top violating values (default: True)
+        summary_view: Summary output mode when show_summary_only=True:
+                      - "full": all metrics
+                      - "short": total rows, non-null pairs, cardinality only
+        top_n: Number of top violating values to return in detailed mode (default: 10)
+
+    Returns:
+        If show_summary_only=True:
+            One-row DataFrame with:
+            - col_left
+            - col_right
+            - total_rows
+            - non_null_pair_rows
+            - distinct_left
+            - distinct_right
+            - distinct_pairs
+            - left_to_right_max
+            - right_to_left_max
+            - relationship_type (1:1, 1:N, N:1, N:N, EMPTY)
+
+        If show_summary_only=False:
+            DataFrame with violating pair keys:
+            - [left key columns]
+            - [right key columns] (right side columns may get "_right" suffix on name clash)
+            - rows_in_left
+            - rows_in_right
+    """
+    def _normalize_cols(cols: Union[str, List[str]], label: str) -> List[str]:
+        if isinstance(cols, str):
+            if not cols:
+                raise ValueError(f"{label} must be a non-empty string or non-empty list of strings")
+            return [cols]
+        if isinstance(cols, list) and cols and all(isinstance(c, str) and c for c in cols):
+            return cols
+        raise ValueError(f"{label} must be a non-empty string or non-empty list of strings")
+
+    left_cols = _normalize_cols(col_left, "col_left")
+    right_cols = _normalize_cols(col_right, "col_right")
+
+    for c in left_cols:
+        if c not in df.columns:
+            raise ValueError(f"Column '{c}' not found in DataFrame")
+    for c in right_cols:
+        if c not in df.columns:
+            raise ValueError(f"Column '{c}' not found in DataFrame")
+    if summary_view not in {"full", "short"}:
+        raise ValueError("summary_view must be 'full' or 'short'")
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0")
+
+    total_rows = df.count()
+    left_not_null = F.lit(True)
+    for c in left_cols:
+        left_not_null = left_not_null & F.col(c).isNotNull()
+    right_not_null = F.lit(True)
+    for c in right_cols:
+        right_not_null = right_not_null & F.col(c).isNotNull()
+
+    pairs = df.select(
+        F.struct(*[F.col(c) for c in left_cols]).alias("_left_key"),
+        F.struct(*[F.col(c) for c in right_cols]).alias("_right_key"),
+    ).filter(
+        left_not_null & right_not_null
+    )
+
+    non_null_pair_rows = pairs.count()
+    distinct_left = pairs.select("_left_key").distinct().count()
+    distinct_right = pairs.select("_right_key").distinct().count()
+    distinct_pairs = pairs.select("_left_key", "_right_key").distinct().count()
+
+    left_counts = pairs.groupBy("_left_key").agg(F.count_distinct("_right_key").alias("distinct_partner_count"))
+    right_counts = pairs.groupBy("_right_key").agg(F.count_distinct("_left_key").alias("distinct_partner_count"))
+
+    left_to_right_max = (
+        left_counts.agg(F.max("distinct_partner_count").alias("m")).collect()[0]["m"] or 0
+    )
+    right_to_left_max = (
+        right_counts.agg(F.max("distinct_partner_count").alias("m")).collect()[0]["m"] or 0
+    )
+
+    if non_null_pair_rows == 0:
+        relationship_type = "EMPTY"
+    elif left_to_right_max <= 1 and right_to_left_max <= 1:
+        relationship_type = "1:1"
+    elif left_to_right_max > 1 and right_to_left_max <= 1:
+        relationship_type = "1:N"
+    elif left_to_right_max <= 1 and right_to_left_max > 1:
+        relationship_type = "N:1"
+    else:
+        relationship_type = "N:N"
+
+    if show_summary_only:
+        if summary_view == "short":
+            return df.sparkSession.createDataFrame(
+                [(
+                    total_rows,
+                    non_null_pair_rows,
+                    distinct_pairs,
+                    relationship_type,
+                )],
+                [
+                    "total_rows",
+                    "non_null_pair_rows",
+                    "distinct_pairs",
+                    "relationship_type",
+                ],
+            )
+
+        return df.sparkSession.createDataFrame(
+            [(
+                ",".join(left_cols),
+                ",".join(right_cols),
+                total_rows,
+                non_null_pair_rows,
+                distinct_left,
+                distinct_right,
+                distinct_pairs,
+                left_to_right_max,
+                right_to_left_max,
+                relationship_type,
+            )],
+            [
+                "col_left",
+                "col_right",
+                "total_rows",
+                "non_null_pair_rows",
+                "distinct_left",
+                "distinct_right",
+                "distinct_pairs",
+                "left_to_right_max",
+                "right_to_left_max",
+                "relationship_type",
+            ],
+        )
+
+    if top_n == 0:
+        left_schema = ", ".join([f"{c} string" for c in left_cols])
+        right_out_names = []
+        for c in right_cols:
+            right_out_names.append(f"{c}_right" if c in left_cols else c)
+        right_schema = ", ".join([f"{c} string" for c in right_out_names])
+        return df.sparkSession.createDataFrame(
+            [],
+            f"{left_schema}, {right_schema}, rows_in_left long, rows_in_right long",
+        )
+
+    pairs_distinct = pairs.select("_left_key", "_right_key").distinct()
+    detailed = (
+        pairs_distinct
+        .join(left_counts.withColumnRenamed("distinct_partner_count", "rows_in_left"), on="_left_key", how="inner")
+        .join(right_counts.withColumnRenamed("distinct_partner_count", "rows_in_right"), on="_right_key", how="inner")
+        .filter((F.col("rows_in_left") > 1) | (F.col("rows_in_right") > 1))
+    )
+
+    for c in left_cols:
+        detailed = detailed.withColumn(c, F.col("_left_key")[c].cast("string"))
+
+    right_out_names = []
+    for c in right_cols:
+        out_name = f"{c}_right" if c in left_cols else c
+        right_out_names.append(out_name)
+        detailed = detailed.withColumn(out_name, F.col("_right_key")[c].cast("string"))
+
+    detailed = (
+        detailed
+        .select(*left_cols, *right_out_names, "rows_in_left", "rows_in_right")
+        .orderBy(F.greatest(F.col("rows_in_left"), F.col("rows_in_right")).desc(), *[F.col(c) for c in left_cols])
+        .limit(top_n)
+    )
+    return detailed
+
+
+def cardinality_check_tables(
+    df_a: DataFrame,
+    df_b: DataFrame,
+    cols_a: Union[str, List[str]],
+    cols_b: Union[str, List[str]],
+    show_summary_only: bool = True,
+    summary_view: str = "full",
+    name_a: str = "a",
+    name_b: str = "b",
+    top_n: int = 10,
+) -> DataFrame:
+    """
+    Profile cardinality relationship of key set(s) across two tables.
+
+    Args:
+        df_a: Left DataFrame
+        df_b: Right DataFrame
+        cols_a: Column name(s) in df_a
+        cols_b: Column name(s) in df_b
+        show_summary_only: If True, returns one-row summary.
+                          If False, returns top violating keys (default: True)
+        summary_view: Summary output mode when show_summary_only=True:
+                      - "full": all metrics
+                      - "short": total rows, overlap, cardinality only
+        name_a: Label for dataset A used in output column names
+        name_b: Label for dataset B used in output column names
+        top_n: Number of top violating keys in detailed mode (default: 10)
+
+    Returns:
+        If show_summary_only=True:
+            One-row DataFrame with cardinality and overlap metrics.
+        If show_summary_only=False:
+            DataFrame with columns:
+            - [cols_a] (key columns from df_a naming)
+            - rows_in_<name_a>
+            - rows_in_<name_b>
+    """
+    def _normalize_cols(cols: Union[str, List[str]], label: str) -> List[str]:
+        if isinstance(cols, str):
+            if not cols:
+                raise ValueError(f"{label} must be a non-empty string or non-empty list of strings")
+            return [cols]
+        if isinstance(cols, list) and cols and all(isinstance(c, str) and c for c in cols):
+            return cols
+        raise ValueError(f"{label} must be a non-empty string or non-empty list of strings")
+
+    left_cols = _normalize_cols(cols_a, "cols_a")
+    right_cols = _normalize_cols(cols_b, "cols_b")
+    if len(left_cols) != len(right_cols):
+        raise ValueError("cols_a and cols_b must contain the same number of columns")
+
+    for c in left_cols:
+        if c not in df_a.columns:
+            raise ValueError(f"Column '{c}' not found in df_a")
+    for c in right_cols:
+        if c not in df_b.columns:
+            raise ValueError(f"Column '{c}' not found in df_b")
+    if summary_view not in {"full", "short"}:
+        raise ValueError("summary_view must be 'full' or 'short'")
+    if not isinstance(name_a, str) or not name_a:
+        raise ValueError("name_a must be a non-empty string")
+    if not isinstance(name_b, str) or not name_b:
+        raise ValueError("name_b must be a non-empty string")
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0")
+
+    def _safe_label(value: str) -> str:
+        return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower())
+
+    label_a = _safe_label(name_a)
+    label_b = _safe_label(name_b)
+
+    left_not_null = F.lit(True)
+    for c in left_cols:
+        left_not_null = left_not_null & F.col(c).isNotNull()
+    right_not_null = F.lit(True)
+    for c in right_cols:
+        right_not_null = right_not_null & F.col(c).isNotNull()
+
+    keys_a = (
+        df_a.select(F.struct(*[F.col(c) for c in left_cols]).alias("_key"))
+        .filter(left_not_null)
+    )
+    keys_b = (
+        df_b.select(F.struct(*[F.col(c) for c in right_cols]).alias("_key"))
+        .filter(right_not_null)
+    )
+
+    total_rows_a = df_a.count()
+    total_rows_b = df_b.count()
+    non_null_rows_a = keys_a.count()
+    non_null_rows_b = keys_b.count()
+
+    rows_in_a_col = f"rows_in_{label_a}"
+    rows_in_b_col = f"rows_in_{label_b}"
+    total_rows_a_col = f"total_rows_{label_a}"
+    total_rows_b_col = f"total_rows_{label_b}"
+
+    grouped_a = keys_a.groupBy("_key").agg(F.count("*").alias(rows_in_a_col))
+    grouped_b = keys_b.groupBy("_key").agg(F.count("*").alias(rows_in_b_col))
+
+    distinct_keys_a = grouped_a.count()
+    distinct_keys_b = grouped_b.count()
+
+    overlap = grouped_a.join(grouped_b, on="_key", how="inner")
+    overlap_distinct_keys = overlap.count()
+
+    max_rows_per_key_a = (overlap.agg(F.max(rows_in_a_col).alias("m")).collect()[0]["m"] or 0)
+    max_rows_per_key_b = (overlap.agg(F.max(rows_in_b_col).alias("m")).collect()[0]["m"] or 0)
+
+    if overlap_distinct_keys == 0:
+        relationship_type = "EMPTY"
+    elif max_rows_per_key_a <= 1 and max_rows_per_key_b <= 1:
+        relationship_type = "1:1"
+    elif max_rows_per_key_a > 1 and max_rows_per_key_b <= 1:
+        relationship_type = "N:1"
+    elif max_rows_per_key_a <= 1 and max_rows_per_key_b > 1:
+        relationship_type = "1:N"
+    else:
+        relationship_type = "N:N"
+
+    coverage_a_to_b_pct = round((overlap_distinct_keys / distinct_keys_a * 100) if distinct_keys_a > 0 else 0.0, 4)
+    coverage_b_to_a_pct = round((overlap_distinct_keys / distinct_keys_b * 100) if distinct_keys_b > 0 else 0.0, 4)
+
+    if show_summary_only:
+        if summary_view == "short":
+            return df_a.sparkSession.createDataFrame(
+                [(
+                    total_rows_a,
+                    total_rows_b,
+                    overlap_distinct_keys,
+                    relationship_type,
+                )],
+                [
+                    total_rows_a_col,
+                    total_rows_b_col,
+                    "overlap_distinct_keys",
+                    "relationship_type",
+                ],
+            )
+
+        return df_a.sparkSession.createDataFrame(
+            [(
+                ",".join(left_cols),
+                ",".join(right_cols),
+                total_rows_a,
+                total_rows_b,
+                non_null_rows_a,
+                non_null_rows_b,
+                distinct_keys_a,
+                distinct_keys_b,
+                overlap_distinct_keys,
+                coverage_a_to_b_pct,
+                coverage_b_to_a_pct,
+                max_rows_per_key_a,
+                max_rows_per_key_b,
+                relationship_type,
+            )],
+            [
+                "cols_a",
+                "cols_b",
+                total_rows_a_col,
+                total_rows_b_col,
+                f"non_null_rows_{label_a}",
+                f"non_null_rows_{label_b}",
+                f"distinct_keys_{label_a}",
+                f"distinct_keys_{label_b}",
+                "overlap_distinct_keys",
+                f"coverage_{label_a}_to_{label_b}_pct",
+                f"coverage_{label_b}_to_{label_a}_pct",
+                f"max_rows_per_key_{label_a}",
+                f"max_rows_per_key_{label_b}",
+                "relationship_type",
+            ],
+        )
+
+    if top_n == 0:
+        key_schema = ", ".join([f"{c} string" for c in left_cols])
+        return df_a.sparkSession.createDataFrame(
+            [],
+            f"{key_schema}, {rows_in_a_col} long, {rows_in_b_col} long",
+        )
+
+    detailed = (
+        overlap
+        .filter((F.col(rows_in_a_col) > 1) | (F.col(rows_in_b_col) > 1))
+    )
+
+    for c in left_cols:
+        detailed = detailed.withColumn(c, F.col("_key")[c].cast("string"))
+
+    detailed = (
+        detailed
+        .select(*left_cols, rows_in_a_col, rows_in_b_col)
+        .orderBy(F.greatest(F.col(rows_in_a_col), F.col(rows_in_b_col)).desc(), *[F.col(c) for c in left_cols])
+        .limit(top_n)
+    )
+    return detailed

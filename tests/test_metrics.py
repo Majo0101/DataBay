@@ -291,6 +291,76 @@ def test_find_key_set_raises_for_invalid_inputs(spark):
     with pytest.raises(ValueError, match="at least one non-null key value"):
         find_key_set(
             tables={"t": df},
-            keys_df=spark.createDataFrame([Row(k=None), Row(k=None)]),
+            keys_df=spark.createDataFrame([Row(k=None), Row(k=None)], "k string"),
             key_column="k",
         )
+
+
+def test_find_key_set_skips_missing_candidate_columns_per_table(spark):
+    t1 = spark.createDataFrame([Row(id="A1", ref="R1")])
+    t2 = spark.createDataFrame([Row(id="A1", payload="x")])
+    keys_df = spark.createDataFrame([Row(k="A1")])
+
+    result = find_key_set(
+        tables={"t1": t1, "t2": t2},
+        keys_df=keys_df,
+        key_column="k",
+        candidate_columns=["id", "ref"],
+    )
+
+    rows = {(r["table_name"], r["column_name"]) for r in result.collect()}
+    assert ("t1", "id") in rows
+    assert ("t1", "ref") in rows
+    assert ("t2", "id") in rows
+    assert ("t2", "ref") not in rows
+
+
+def test_find_key_set_normalizes_types_via_string_cast(spark):
+    table = spark.createDataFrame([Row(customer_id="1"), Row(customer_id="3")])
+    keys_df = spark.createDataFrame([Row(k=1), Row(k=2), Row(k=3)])
+
+    result = find_key_set(
+        tables={"customers": table},
+        keys_df=keys_df,
+        key_column="k",
+        candidate_columns=["customer_id"],
+    ).collect()[0]
+
+    assert result["total_keys"] == 3
+    assert result["matched_count"] == 2
+    assert result["missing_count"] == 1
+    assert result["coverage_pct"] == 66.6667
+
+
+def test_find_key_set_uses_distinct_keys_from_keys_df(spark):
+    table = spark.createDataFrame([Row(code="A")])
+    keys_df = spark.createDataFrame([Row(k="A"), Row(k="A"), Row(k="B")])
+
+    result = find_key_set(
+        tables={"codes": table},
+        keys_df=keys_df,
+        key_column="k",
+        candidate_columns=["code"],
+    ).collect()[0]
+
+    assert result["total_keys"] == 2
+    assert result["matched_count"] == 1
+    assert result["missing_count"] == 1
+    assert result["coverage_pct"] == 50.0
+
+
+def test_find_key_set_smoke_with_larger_input(spark):
+    keys_rows = [Row(k=str(i)) for i in range(200)]
+    data_rows = [Row(kcol=str(i)) for i in range(150)]
+
+    result = find_key_set(
+        tables={"big_table": spark.createDataFrame(data_rows)},
+        keys_df=spark.createDataFrame(keys_rows),
+        key_column="k",
+        candidate_columns=["kcol"],
+    ).collect()[0]
+
+    assert result["total_keys"] == 200
+    assert result["matched_count"] == 150
+    assert result["missing_count"] == 50
+    assert result["coverage_pct"] == 75.0
