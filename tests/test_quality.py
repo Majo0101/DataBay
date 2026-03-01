@@ -131,6 +131,19 @@ def test_duplicate_check_detailed_top_n(spark):
     assert rows[0]["cat"] == "x"
 
 
+def test_duplicate_check_raises_for_invalid_top_n_and_cols(spark):
+    df = spark.createDataFrame([Row(id=1, cat="x")])
+
+    with pytest.raises(ValueError, match="top_n must be >= 0"):
+        duplicate_check(df=df, cols=["id"], top_n=-1)
+
+    with pytest.raises(ValueError, match="cols must be a non-empty list"):
+        duplicate_check(df=df, cols=[])
+
+    with pytest.raises(ValueError, match="Column 'missing' not found in DataFrame"):
+        duplicate_check(df=df, cols=["missing"])
+
+
 def test_pk_uniqueness_check_detects_duplicates_and_nulls(spark):
     df = spark.createDataFrame(
         [
@@ -209,6 +222,9 @@ def test_regex_check_raises_for_invalid_rules(spark):
 
     with pytest.raises(ValueError, match="must be a non-empty string"):
         regex_check(df, rules={"email": ""})
+
+    with pytest.raises(ValueError, match="top_n must be >= 0"):
+        regex_check(df, rules={"email": r".+"}, show_summary_only=False, top_n=-1)
 
 
 def test_regex_check_handles_empty_dataframe(spark):
@@ -357,6 +373,9 @@ def test_row_level_rules_raises_for_invalid_rules(spark):
 
     with pytest.raises(ValueError, match="rule expression must be a non-empty string"):
         row_level_rules(df, rules={"valid_name": ""})
+
+    with pytest.raises(ValueError, match="top_n must be >= 0"):
+        row_level_rules(df, rules={"valid_name": "x > 0"}, show_summary_only=False, top_n=-1)
 
 
 def test_row_level_rules_raises_for_invalid_sql_expression(spark):

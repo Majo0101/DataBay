@@ -127,6 +127,23 @@ def test_compare_columns_by_key_summary_and_detail(spark):
     assert detail.count() == 2
 
 
+def test_compare_columns_by_key_raises_for_invalid_columns(spark):
+    df_a = spark.createDataFrame([Row(id=1, name="Alice")])
+    df_b = spark.createDataFrame([Row(id=1, name="Alice")])
+
+    with pytest.raises(ValueError, match="key_cols must be a non-empty list"):
+        compare_columns_by_key(df_a, df_b, key_cols=[], compare_cols=["name"])
+
+    with pytest.raises(ValueError, match="Column 'missing_key' not found in df_a"):
+        compare_columns_by_key(df_a, df_b, key_cols=["missing_key"], compare_cols=["name"])
+
+    with pytest.raises(ValueError, match="compare_cols must be a non-empty list"):
+        compare_columns_by_key(df_a, df_b, key_cols=["id"], compare_cols=[])
+
+    with pytest.raises(ValueError, match="Column 'missing_col' not found in df_a"):
+        compare_columns_by_key(df_a, df_b, key_cols=["id"], compare_cols=["missing_col"])
+
+
 def test_compare_schema_detects_mismatch_and_missing_columns(spark):
     df_a = spark.createDataFrame([Row(id=1, amount=10.0, only_a="x")])
     df_b = spark.createDataFrame([Row(id="1", amount=10, only_b="y")])
@@ -206,6 +223,20 @@ def test_numeric_diff_check_raises_when_no_numeric_columns(spark):
 
     with pytest.raises(ValueError, match="No numeric columns found to compare"):
         numeric_diff_check(df_a=df_a, df_b=df_b, key_cols=["id"])
+
+
+def test_numeric_diff_check_raises_for_invalid_diff_type(spark):
+    df_a = spark.createDataFrame([Row(id=1, value=1.0)])
+    df_b = spark.createDataFrame([Row(id=1, value=1.1)])
+
+    with pytest.raises(ValueError, match="diff_type must be one of"):
+        numeric_diff_check(
+            df_a=df_a,
+            df_b=df_b,
+            key_cols=["id"],
+            numeric_cols=["value"],
+            diff_type="relative",
+        )
 
 
 def test_find_key_set_reports_column_coverage(spark):

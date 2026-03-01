@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from pyspark.sql import DataFrame
 
 def compare_datasets(
@@ -93,7 +93,7 @@ def numeric_diff_check(
     numeric_cols: Optional[List[str]] = None,
     tolerance: float = 0.0,
     show_summary_only: bool = False,
-    diff_type: str = "absolute",
+    diff_type: Literal["absolute", "percentage", "both"] = "absolute",
 ) -> DataFrame:
     """
     Compare numeric values between two datasets by key columns and analyze differences.

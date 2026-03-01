@@ -124,12 +124,22 @@ def duplicate_check(
         - When check_nulls=True, reports NULL counts to help identify data quality issues
     """
     
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0")
+
     # Ensure cols is a list (handle None case)
     cols_to_check: List[str]
     if cols is None:
         cols_to_check = df.columns
     else:
         cols_to_check = cols
+
+    if not cols_to_check or any((not isinstance(c, str) or not c) for c in cols_to_check):
+        raise ValueError("cols must be a non-empty list of non-empty strings")
+
+    for c in cols_to_check:
+        if c not in df.columns:
+            raise ValueError(f"Column '{c}' not found in DataFrame")
     
     total_rows = df.count()
     
@@ -248,7 +258,7 @@ def regex_check(
     Args:
         df: DataFrame to validate
         rules: Mapping of column_name -> regex pattern
-        show_summary_only: If True, returns one-row summary.
+        show_summary_only: If True, returns one-row-per-column summary.
                           If False, returns non-matching values (default: True)
         top_n: Number of top non-matching values to show per column when
                show_summary_only=False (default: 10)
@@ -272,6 +282,8 @@ def regex_check(
     """
     if not rules:
         raise ValueError("rules must be a non-empty dict of column_name -> regex pattern")
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0")
 
     for col_name, pattern in rules.items():
         if col_name not in df.columns:
@@ -361,7 +373,7 @@ def row_level_rules(
     Args:
         df: DataFrame to validate
         rules: Mapping of rule_name -> Spark SQL boolean expression
-        show_summary_only: If True, returns one-row summary per rule.
+        show_summary_only: If True, returns one-row-per-rule summary.
                           If False, returns failing row representations (default: True)
         top_n: Number of top failing row representations to show per rule when
                show_summary_only=False (default: 10)
@@ -385,6 +397,8 @@ def row_level_rules(
     """
     if not rules:
         raise ValueError("rules must be a non-empty dict of rule_name -> expression")
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0")
 
     for rule_name, rule_expr in rules.items():
         if not rule_name or not isinstance(rule_name, str):

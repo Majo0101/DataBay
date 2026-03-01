@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
@@ -109,8 +109,25 @@ def compare_columns_by_key(
         - value != different_value → NON-MATCH
     """
     
+    if not key_cols or any((not isinstance(c, str) or not c) for c in key_cols):
+        raise ValueError("key_cols must be a non-empty list of non-empty strings")
+
+    for col in key_cols:
+        if col not in df_a.columns:
+            raise ValueError(f"Column '{col}' not found in df_a")
+        if col not in df_b.columns:
+            raise ValueError(f"Column '{col}' not found in df_b")
+
     if compare_cols == ["*"]:
         compare_cols = [c for c in df_a.columns if c not in key_cols]
+    elif not compare_cols or any((not isinstance(c, str) or not c) for c in compare_cols):
+        raise ValueError("compare_cols must be a non-empty list of non-empty strings")
+
+    for col in compare_cols:
+        if col not in df_a.columns:
+            raise ValueError(f"Column '{col}' not found in df_a")
+        if col not in df_b.columns:
+            raise ValueError(f"Column '{col}' not found in df_b")
 
     a = df_a.alias("a")
     b = df_b.alias("b")
@@ -238,7 +255,7 @@ def numeric_diff_check(
     numeric_cols: Optional[List[str]] = None,
     tolerance: float = 0.0,
     show_summary_only: bool = False,
-    diff_type: str = "absolute"
+    diff_type: Literal["absolute", "percentage", "both"] = "absolute"
 ) -> DataFrame:
 
     """
@@ -286,6 +303,9 @@ def numeric_diff_check(
         - Handles null values gracefully
         - Optimized for performance with single-pass aggregations
     """
+    if diff_type not in ["absolute", "percentage", "both"]:
+        raise ValueError("diff_type must be one of: 'absolute', 'percentage', 'both'")
+
     # --- helper: numeric type check ---
     def _is_numeric_type(simple_type: str) -> bool:
         if simple_type.startswith("decimal"):
