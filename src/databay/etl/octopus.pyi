@@ -146,6 +146,7 @@ class Octopus:
         header: bool = True,
         infer_schema: bool = False,
         mode: str = "both",
+        csv_read_mode: str = "PERMISSIVE",
     ) -> Optional[Dict[str, DataFrame]]:
         """
         Load CSV files from Docker-mounted volumes into Spark.
@@ -158,6 +159,7 @@ class Octopus:
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
             mode: Output mode - "view", "dfs", or "both" (default: "both")
+            csv_read_mode: Spark CSV parser mode - "PERMISSIVE", "DROPMALFORMED", or "FAILFAST"
             
         Returns:
             None or dict of {table_name: DataFrame}

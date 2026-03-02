@@ -18,6 +18,7 @@ dependencies = [
     "docker",
     "python-dotenv",
     "ipython",
+    "nbconvert"
 ]
 
 [project.optional-dependencies]

@@ -15,8 +15,8 @@ from databay.runtime.spark import spark_connect
 @pytest.fixture(scope="module")
 def spark():
     cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
+        image="spark-delta-pg",
+        name="spark-delta-pg",
         bind_mounts={"C/landing": "/data/apache"},
     )
 
@@ -142,6 +142,88 @@ def test_compare_columns_by_key_raises_for_invalid_columns(spark):
 
     with pytest.raises(ValueError, match="Column 'missing_col' not found in df_a"):
         compare_columns_by_key(df_a, df_b, key_cols=["id"], compare_cols=["missing_col"])
+
+
+def test_compare_columns_by_key_summary_star_is_consistent_with_single_column_when_total_column_exists(spark):
+    df_a = spark.createDataFrame(
+        [
+            Row(id=1, total="A", zmsnadnn="x"),
+            Row(id=2, total="B", zmsnadnn="y"),
+            Row(id=3, total="C", zmsnadnn="z"),
+        ]
+    )
+    df_b = spark.createDataFrame(
+        [
+            Row(id=1, total="A", zmsnadnn="x"),
+            Row(id=2, total="DIFF", zmsnadnn="y"),
+            Row(id=3, total="C", zmsnadnn="DIFF"),
+        ]
+    )
+
+    summary_all = compare_columns_by_key(
+        df_a=df_a,
+        df_b=df_b,
+        key_cols=["id"],
+        compare_cols=["*"],
+        show_summary_only=True,
+    )
+    summary_one = compare_columns_by_key(
+        df_a=df_a,
+        df_b=df_b,
+        key_cols=["id"],
+        compare_cols=["zmsnadnn"],
+        show_summary_only=True,
+    )
+
+    row_all = [r for r in summary_all.collect() if r["column"] == "zmsnadnn"][0]
+    row_one = summary_one.collect()[0]
+
+    assert row_all["total_rows"] == 3
+    assert row_one["total_rows"] == 3
+    assert row_all["matching_rows"] == row_one["matching_rows"] == 2
+    assert row_all["non_matching_rows"] == row_one["non_matching_rows"] == 1
+
+
+def test_compare_columns_by_key_full_outer_counts_missing_keys_as_non_match(spark):
+    df_a = spark.createDataFrame(
+        [
+            Row(id=1, zmsnadnn="A"),
+            Row(id=2, zmsnadnn="B"),
+        ]
+    )
+    df_b = spark.createDataFrame(
+        [
+            Row(id=2, zmsnadnn="B"),
+            Row(id=3, zmsnadnn="C"),
+        ]
+    )
+
+    summary = compare_columns_by_key(
+        df_a=df_a,
+        df_b=df_b,
+        key_cols=["id"],
+        compare_cols=["zmsnadnn"],
+        show_summary_only=True,
+        join_type="full_outer",
+    ).collect()[0]
+
+    assert summary["total_rows"] == 3
+    assert summary["matching_rows"] == 1
+    assert summary["non_matching_rows"] == 2
+
+
+def test_compare_columns_by_key_raises_for_invalid_join_type(spark):
+    df_a = spark.createDataFrame([Row(id=1, name="Alice")])
+    df_b = spark.createDataFrame([Row(id=1, name="Alice")])
+
+    with pytest.raises(ValueError, match="join_type must be one of"):
+        compare_columns_by_key(
+            df_a=df_a,
+            df_b=df_b,
+            key_cols=["id"],
+            compare_cols=["name"],
+            join_type="cross",
+        )
 
 
 def test_compare_schema_detects_mismatch_and_missing_columns(spark):

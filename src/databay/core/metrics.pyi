@@ -30,6 +30,7 @@ def compare_columns_by_key(
     key_cols: List[str],
     compare_cols: List[str],
     show_summary_only: bool = True,
+    join_type: str = "inner",
 ) -> DataFrame:
     """
     Compare specific columns between two DataFrames joined by key columns.
@@ -41,6 +42,8 @@ def compare_columns_by_key(
         compare_cols: List of columns to compare, or ["*"] for all non-key columns
         show_summary_only: If True, returns summary statistics per column.
                           If False, returns detailed differences (default: True)
+        join_type: Join strategy for key alignment. Supported:
+                  "inner", "left", "right", "full", "full_outer" (default: "inner")
     
     Returns:
         If show_summary_only=True:

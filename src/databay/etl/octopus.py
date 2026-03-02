@@ -422,25 +422,27 @@ class Octopus:
         header=True,
         infer_schema=False,
         mode="both",
+        csv_read_mode="PERMISSIVE",
     ):
         """
         Load CSV files from Docker-mounted volumes into Spark.
         
         Args:
             spark: Active SparkSession instance
-            sources: List of (host_path, table_name) tuples
+            sources: List of (container_path, table_name) tuples where container_path starts with '/'
             dock_cfg: DockConfig containing bind_mounts mapping
             delimiter: CSV delimiter character (default: "|")
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
             mode: Output mode - "view", "dfs", or "both" (default: "both")
+            csv_read_mode: Spark CSV parser mode - "PERMISSIVE", "DROPMALFORMED", or "FAILFAST"
             
         Returns:
             None or dict of {table_name: DataFrame}
             
         Raises:
             RuntimeError: If SparkSession is None
-            ValueError: If host_path not found in DockConfig bind_mounts
+            ValueError: If container_path does not start with a mounted path
         """
         if spark is None:
             spark = self.spark
@@ -449,22 +451,41 @@ class Octopus:
         if mode not in {"view", "dfs", "both"}:
             raise ValueError("mode must be one of: 'view', 'dfs', 'both'")
 
+        csv_read_mode = str(csv_read_mode).upper()
+        if csv_read_mode not in {"PERMISSIVE", "DROPMALFORMED", "FAILFAST"}:
+            raise ValueError(
+                "csv_read_mode must be one of: 'PERMISSIVE', 'DROPMALFORMED', 'FAILFAST'"
+            )
+
         create_view = mode in {"view", "both"}
         keep_dfs = mode in {"dfs", "both"}
         dfs = {} if keep_dfs else None
 
-        for host_path, name in sources:
-
-            if host_path not in dock_cfg.bind_mounts:
-                raise ValueError(f"Path {host_path} is not in DockConfig.bind_mounts")
-
-            container_path = dock_cfg.bind_mounts[host_path]
-
+        for container_path, name in sources:
+            
+            # Basic validation - container path must start with /
+            if not container_path.startswith("/"):
+                raise ValueError(f"Container path must start with '/': {container_path}")
+            
+            # Check if path starts with one of the mounted container paths
+            valid_mount = False
+            for mount_container in dock_cfg.bind_mounts.values():
+                if container_path.startswith(mount_container):
+                    valid_mount = True
+                    break
+            
+            if not valid_mount:
+                mounted_paths = ", ".join(dock_cfg.bind_mounts.values())
+                raise ValueError(
+                    f"Container path '{container_path}' does not start with any mounted path: {mounted_paths}"
+                )
+            
             df = (
                 spark.read
                 .option("header", header)
                 .option("inferSchema", infer_schema)
                 .option("delimiter", delimiter)
+                .option("mode", csv_read_mode)
                 .csv(container_path)
             )
 

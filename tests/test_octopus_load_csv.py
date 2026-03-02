@@ -38,8 +38,8 @@ class _FakeSpark:
 @pytest.fixture(scope="module")
 def spark_session():
     cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
+        image="spark-delta-pg",
+        name="spark-delta-pg",
         bind_mounts={"C/landing": "/data/apache"},
     )
 
@@ -73,7 +73,7 @@ def test_octopus_load_csv_reads_mounted_csv(spark_session, landing_csv_path):
 
     dfs = octopus.load_csv(
         spark=spark_session,
-        sources=[("C/landing", "landing_csv")],
+        sources=[("/data/apache", "landing_csv")],
         dock_cfg=dock_cfg,
         delimiter=",",
         header=True,
@@ -93,10 +93,23 @@ def test_octopus_load_csv_raises_for_unmounted_path(spark_session):
     octopus = Octopus(spark=spark_session)
     dock_cfg = DockConfig(bind_mounts={"C/landing": "/data/apache"})
 
-    with pytest.raises(ValueError, match="is not in DockConfig.bind_mounts"):
+    with pytest.raises(ValueError, match="does not start with any mounted path"):
         octopus.load_csv(
             spark=spark_session,
-            sources=[("C/missing", "missing_csv")],
+            sources=[("/data/missing", "missing_csv")],
+            dock_cfg=dock_cfg,
+            mode="both",
+        )
+
+
+def test_octopus_load_csv_raises_for_invalid_container_path(spark_session):
+    octopus = Octopus(spark=spark_session)
+    dock_cfg = DockConfig(bind_mounts={"C/landing": "/data/apache"})
+
+    with pytest.raises(ValueError, match="Container path must start with"):
+        octopus.load_csv(
+            spark=spark_session,
+            sources=[("C:/landing/file.csv", "invalid_csv")],
             dock_cfg=dock_cfg,
             mode="both",
         )
@@ -110,9 +123,23 @@ def test_octopus_load_csv_raises_for_invalid_mode(spark_session, invalid_mode):
     with pytest.raises(ValueError, match="mode must be one of"):
         octopus.load_csv(
             spark=spark_session,
-            sources=[("C/landing", "landing_csv")],
+            sources=[("/data/apache", "landing_csv")],
             dock_cfg=dock_cfg,
             mode=invalid_mode,
+        )
+
+
+@pytest.mark.parametrize("invalid_csv_read_mode", ["", "strict", "permiss"])
+def test_octopus_load_csv_raises_for_invalid_csv_read_mode(spark_session, invalid_csv_read_mode):
+    octopus = Octopus(spark=spark_session)
+    dock_cfg = DockConfig(bind_mounts={"C/landing": "/data/apache"})
+
+    with pytest.raises(ValueError, match="csv_read_mode must be one of"):
+        octopus.load_csv(
+            spark=spark_session,
+            sources=[("/data/apache", "landing_csv")],
+            dock_cfg=dock_cfg,
+            csv_read_mode=invalid_csv_read_mode,
         )
 
 
@@ -126,7 +153,7 @@ def test_octopus_load_csv_view_mode_creates_temp_view_and_returns_none():
 
     result = octopus.load_csv(
         spark=fake_spark,
-        sources=[("C/landing", "landing_csv")],
+        sources=[("/data/apache", "landing_csv")],
         dock_cfg=dock_cfg,
         mode="view",
     )
@@ -146,7 +173,7 @@ def test_octopus_load_csv_dfs_mode_returns_dict_without_creating_view():
 
     result = octopus.load_csv(
         spark=fake_spark,
-        sources=[("C/landing", "landing_csv")],
+        sources=[("/data/apache", "landing_csv")],
         dock_cfg=dock_cfg,
         mode="dfs",
     )
@@ -156,6 +183,27 @@ def test_octopus_load_csv_dfs_mode_returns_dict_without_creating_view():
     assert result["landing_csv"] is fake_df
     assert fake_df.views == []
     assert fake_reader.last_csv_path == "/data/apache"
+    assert fake_reader.options["mode"] == "PERMISSIVE"
+
+
+def test_octopus_load_csv_sets_custom_csv_read_mode():
+    fake_df = _FakeDataFrame()
+    fake_reader = _FakeReader(fake_df)
+    fake_spark = _FakeSpark(fake_reader)
+
+    octopus = Octopus(spark=fake_spark)
+    dock_cfg = DockConfig(bind_mounts={"C/landing": "/data/apache"})
+
+    result = octopus.load_csv(
+        spark=fake_spark,
+        sources=[("/data/apache", "landing_csv")],
+        dock_cfg=dock_cfg,
+        mode="dfs",
+        csv_read_mode="failfast",
+    )
+
+    assert result is not None
+    assert fake_reader.options["mode"] == "FAILFAST"
 
 
 def test_octopus_load_csv_uses_self_spark_when_spark_argument_is_none():
@@ -168,7 +216,7 @@ def test_octopus_load_csv_uses_self_spark_when_spark_argument_is_none():
 
     result = octopus.load_csv(
         spark=None,
-        sources=[("C/landing", "landing_csv")],
+        sources=[("/data/apache", "landing_csv")],
         dock_cfg=dock_cfg,
         mode="dfs",
     )
@@ -185,7 +233,7 @@ def test_octopus_load_csv_raises_when_no_spark_is_available():
     with pytest.raises(RuntimeError, match="SparkSession is not set"):
         octopus.load_csv(
             spark=None,
-            sources=[("C/landing", "landing_csv")],
+            sources=[("/data/apache", "landing_csv")],
             dock_cfg=dock_cfg,
             mode="both",
         )

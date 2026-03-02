@@ -30,8 +30,8 @@ def compare_datasets(
     if cols == ["*"]:
         cols = df_a.columns
 
-    a = df_a.select(*cols).cache()
-    b = df_b.select(*cols).cache()
+    a = df_a.select(*cols)
+    b = df_b.select(*cols)
 
     cnt_a = a.count()
     cnt_b = b.count()
@@ -65,9 +65,6 @@ def compare_datasets(
         ["metric", "scope", "count_value", "percent_value"]
     )
 
-    a.unpersist()
-    b.unpersist()
-
     return result
 
 
@@ -76,7 +73,8 @@ def compare_columns_by_key(
     df_b: DataFrame,
     key_cols: List[str],
     compare_cols: List[str],
-    show_summary_only: bool = True
+    show_summary_only: bool = True,
+    join_type: str = "inner",
 ) -> DataFrame:
     """
     Compare specific columns between two DataFrames joined by key columns.
@@ -88,6 +86,8 @@ def compare_columns_by_key(
         compare_cols: List of columns to compare, or ["*"] for all non-key columns
         show_summary_only: If True, returns summary statistics per column.
                           If False, returns detailed differences (default: True)
+        join_type: Join strategy for key alignment. Supported:
+                  "inner", "left", "right", "full", "full_outer" (default: "inner")
     
     Returns:
         If show_summary_only=True:
@@ -129,72 +129,116 @@ def compare_columns_by_key(
         if col not in df_b.columns:
             raise ValueError(f"Column '{col}' not found in df_b")
 
-    a = df_a.alias("a")
-    b = df_b.alias("b")
+    normalized_join_type = str(join_type).strip().lower()
+    join_type_map = {
+        "inner": "inner",
+        "left": "left",
+        "left_outer": "left_outer",
+        "right": "right",
+        "right_outer": "right_outer",
+        "full": "full_outer",
+        "full_outer": "full_outer",
+        "outer": "full_outer",
+    }
+    if normalized_join_type not in join_type_map:
+        raise ValueError(
+            "join_type must be one of: 'inner', 'left', 'right', 'full', 'full_outer'"
+        )
 
-    joined = a.join(b, key_cols, "inner")
+    spark_join_type = join_type_map[normalized_join_type]
+
+    # ── Build join-ready DataFrames with UNIQUE column names ──────────
+    # Rename compare columns with explicit prefixes to eliminate any
+    # ambiguity that Spark's column resolver may produce when both sides
+    # of the join carry identically-named columns.
+    _A = "__a__"
+    _B = "__b__"
+
+    select_a = [F.col(k) for k in key_cols]
+    select_b = [F.col(k) for k in key_cols]
+
+    for c in compare_cols:
+        select_a.append(F.col(c).alias(f"{_A}{c}"))
+        select_b.append(F.col(c).alias(f"{_B}{c}"))
+
+    a = df_a.select(select_a).withColumn("__db_a_present__", F.lit(1))
+    b = df_b.select(select_b).withColumn("__db_b_present__", F.lit(1))
+
+    joined = a.join(b, key_cols, spark_join_type)
 
     if show_summary_only:
         # Compute total AND match counts in ONE pass
-        agg_exprs = [F.count("*").alias("total")]
+        total_alias = "__db_total_rows__"
+        agg_exprs = [F.count("*").alias(total_alias)]
+
         for c in compare_cols:
+            col_a = F.col(f"{_A}{c}")
+            col_b = F.col(f"{_B}{c}")
             agg_exprs.append(
                 F.sum(
                     F.when(
-                        (F.col(f"a.{c}") == F.col(f"b.{c}")) |
-                        (F.col(f"a.{c}").isNull() & F.col(f"b.{c}").isNull()),
+                        F.col("__db_a_present__").isNull() | F.col("__db_b_present__").isNull(),
+                        0
+                    ).when(
+                        col_a.isNull() & col_b.isNull(),
                         1
-                    ).otherwise(0)
-                ).alias(c)
+                    ).when(
+                        col_a.isNull() | col_b.isNull(),
+                        0
+                    ).otherwise(
+                        F.when(col_a == col_b, 1).otherwise(0)
+                    )
+                ).alias(f"__db_match__{c}")
             )
 
         result_dict = joined.select(agg_exprs).collect()[0].asDict()
-        total = result_dict.pop("total")
+        total = result_dict.pop(total_alias)
 
         rows = []
         for c in compare_cols:
-            m = result_dict[c] or 0  # Handle None when join is empty
-            match_pct = round(m / total * 100, 4) if total > 0 else 0.0
+            m = result_dict[f"__db_match__{c}"] or 0
+            match_pct = round((m / total * 100), 4) if total > 0 else 0.0
             rows.append((c, total, m, total - m, match_pct))
 
         return joined.sparkSession.createDataFrame(
             rows,
             ["column", "total_rows", "matching_rows", "non_matching_rows", "match_%"]
         )
-    
+
     else:
         # Return detailed differences
         select_exprs = key_cols.copy()
-        
+
         for c in compare_cols:
-            col_a = F.col(f"a.{c}")
-            col_b = F.col(f"b.{c}")
-            
-            # Check if values match (including NULL == NULL)
-            # Explicitly handle NULLs to avoid NULL in result
+            col_a = F.col(f"{_A}{c}")
+            col_b = F.col(f"{_B}{c}")
+
             is_match = F.when(
+                F.col("__db_a_present__").isNull() | F.col("__db_b_present__").isNull(),
+                False
+            ).when(
                 col_a.isNull() & col_b.isNull(), True
             ).when(
                 col_a.isNull() | col_b.isNull(), False
             ).otherwise(
                 col_a == col_b
             )
-            
+
             select_exprs.extend([
                 col_a.alias(f"{c}_a"),
                 col_b.alias(f"{c}_b"),
                 is_match.alias(f"{c}_match")
             ])
-        
+
         detailed = joined.select(select_exprs)
-        
+
         # Filter to only rows where at least one column differs
         diff_filter = F.lit(False)
         for c in compare_cols:
             diff_filter = diff_filter | ~F.col(f"{c}_match")
-        
+
         detailed = detailed.filter(diff_filter)
-        
+
         return detailed
     
 
@@ -355,13 +399,22 @@ def numeric_diff_check(
     if not numeric_cols:
         raise ValueError("No numeric columns found to compare.")
 
-    cols_to_select = key_cols + numeric_cols
+    # ── Build join-ready DataFrames with UNIQUE column names ──────────
+    _A = "__a__"
+    _B = "__b__"
 
-    a = df_a.select(cols_to_select).alias("a")
-    b = df_b.select(cols_to_select).alias("b")
+    select_a = [F.col(k) for k in key_cols]
+    select_b = [F.col(k) for k in key_cols]
+
+    for c in numeric_cols:
+        select_a.append(F.col(c).alias(f"{_A}{c}"))
+        select_b.append(F.col(c).alias(f"{_B}{c}"))
+
+    a = df_a.select(select_a)
+    b = df_b.select(select_b)
 
     joined = a.join(
-        broadcast(b),
+        b,
         on=key_cols,
         how="inner"
     )
@@ -371,8 +424,8 @@ def numeric_diff_check(
         agg_exprs = [F.count("*").alias("total_compared")]
 
         for col in numeric_cols:
-            col_a = F.col(f"a.{col}")
-            col_b = F.col(f"b.{col}")
+            col_a = F.col(f"{_A}{col}")
+            col_b = F.col(f"{_B}{col}")
 
             raw_diff = F.abs(col_a - col_b)
 
@@ -427,8 +480,8 @@ def numeric_diff_check(
         select_exprs = key_cols.copy()
 
         for col in numeric_cols:
-            col_a = F.col(f"a.{col}")
-            col_b = F.col(f"b.{col}")
+            col_a = F.col(f"{_A}{col}")
+            col_b = F.col(f"{_B}{col}")
 
             raw_diff = F.abs(col_a - col_b)
             abs_diff = F.when(raw_diff <= tolerance, F.lit(0.0)).otherwise(raw_diff)
