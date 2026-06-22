@@ -5,18 +5,58 @@ services:
     build: .
     image: psg-db
     container_name: psg-db
+
+    shm_size: 8gb
+
+    command:
+      - "postgres"
+      - "-c"
+      - "max_worker_processes=16"
+      - "-c"
+      - "max_parallel_workers=10"
+      - "-c"
+      - "max_parallel_workers_per_gather=6"
+      - "-c"
+      - "shared_buffers=4GB"
+      - "-c"
+      - "work_mem=64MB"
+      - "-c"
+      - "maintenance_work_mem=2GB"
+      - "-c"
+      - "effective_cache_size=24GB"
+      - "-c"
+      - "parallel_setup_cost=0"
+      - "-c"
+      - "parallel_tuple_cost=0"
+      - "-c"
+      - "min_parallel_table_scan_size=8MB"
+      - "-c"
+      - "min_parallel_index_scan_size=512kB"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "full_page_writes=off"
+
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-testdb}
-      - POSTGRES_USER=${POSTGRES_USER:-test_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-test_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-testdb}
+      POSTGRES_USER: ${POSTGRES_USER:-test_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test_pass}
+
     ports:
       - "5432:5432"
+
     tmpfs:
       - /var/lib/postgresql/data
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 8
       start_period: 15s
+
     restart: unless-stopped
