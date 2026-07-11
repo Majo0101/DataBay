@@ -1,8 +1,30 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union, overload
 
 from pyspark.sql import DataFrame
+
+
+@overload
+def select_informative_columns(
+    df: DataFrame,
+    min_non_null_percentage: float = 0.0,
+    min_distinct_values: int = 1,
+    preserve: Optional[List[str]] = None,
+    treat_blank_as_null: bool = True,
+    return_report: Literal[False] = False,
+) -> DataFrame: ...
+
+
+@overload
+def select_informative_columns(
+    df: DataFrame,
+    min_non_null_percentage: float = 0.0,
+    min_distinct_values: int = 1,
+    preserve: Optional[List[str]] = None,
+    treat_blank_as_null: bool = True,
+    return_report: Literal[True] = True,
+) -> Tuple[DataFrame, DataFrame]: ...
 
 
 def null_rate(

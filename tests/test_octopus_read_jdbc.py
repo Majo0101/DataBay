@@ -33,7 +33,7 @@ def spark_session():
     cfg = DockConfig(
         image="spark-pg-delta",
         name="spark-pg-delta",
-        bind_mounts={"C/landing": "/data/apache"},
+        bind_mounts={},
     )
 
     try:

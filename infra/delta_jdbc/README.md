@@ -138,10 +138,10 @@ spark.sql("VACUUM demo.sales RETAIN 0 HOURS DRY RUN").show(truncate=False)
 
 ### Reading CSV Files from Windows
 
-The `C:/landing` folder on your Windows machine is mounted to `/data/apache` inside the container:
+The repository's `data/landing` folder is mounted to `/data/apache` inside the container:
 
 ```python
-# Read CSV file from Windows C:/landing folder
+# Read a CSV file from the repository data/landing folder
 df = spark.read.csv("/data/apache/mydata.csv", header=True, inferSchema=True)
 df.show()
 
@@ -201,7 +201,7 @@ Persistent and mounted data:
 
 - `spark-lakehouse` - Delta Lake table data (Docker volume)
 - `spark-metastore` - PostgreSQL Hive metastore database (Docker volume)
-- `C:/landing` → `/data/apache` - Windows folder for CSV files (bind mount)
+- `data/landing` → `/data/apache` - Repository folder for CSV files (bind mount)
 
 ## Performance Tuning
 

@@ -1,7 +1,159 @@
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union, overload
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
+from pyspark.sql.types import StringType
+
+
+@overload
+def select_informative_columns(
+    df: DataFrame,
+    min_non_null_percentage: float = 0.0,
+    min_distinct_values: int = 1,
+    preserve: Optional[List[str]] = None,
+    treat_blank_as_null: bool = True,
+    return_report: Literal[False] = False,
+) -> DataFrame: ...
+
+
+@overload
+def select_informative_columns(
+    df: DataFrame,
+    min_non_null_percentage: float = 0.0,
+    min_distinct_values: int = 1,
+    preserve: Optional[List[str]] = None,
+    treat_blank_as_null: bool = True,
+    return_report: Literal[True] = True,
+) -> Tuple[DataFrame, DataFrame]: ...
+
+
+def select_informative_columns(
+    df: DataFrame,
+    min_non_null_percentage: float = 0.0,
+    min_distinct_values: int = 1,
+    preserve: Optional[List[str]] = None,
+    treat_blank_as_null: bool = True,
+    return_report: bool = False,
+) -> Union[DataFrame, Tuple[DataFrame, DataFrame]]:
+    """Return a projection containing columns with useful observed values.
+
+    Empty columns are always removed unless explicitly preserved. Optional
+    thresholds can also remove sparse or constant columns. String blanks are
+    treated as missing values by default. All column statistics are calculated
+    in one Spark aggregation.
+
+    Args:
+        df: Spark DataFrame to profile and project.
+        min_non_null_percentage: Minimum populated percentage from 0 to 100.
+        min_distinct_values: Minimum number of distinct populated values.
+        preserve: Columns to retain regardless of their statistics.
+        treat_blank_as_null: Treat empty and whitespace-only strings as missing.
+        return_report: Return ``(clean_df, report_df)`` when True.
+
+    Returns:
+        A projected DataFrame, or that DataFrame plus a decision report with
+        column name, type, population statistics, distinct count, and status.
+    """
+    if not df.columns:
+        raise ValueError("df must contain at least one column")
+    if not isinstance(min_non_null_percentage, (int, float)) or isinstance(
+        min_non_null_percentage, bool
+    ):
+        raise ValueError("min_non_null_percentage must be a number from 0 to 100")
+    if not 0 <= float(min_non_null_percentage) <= 100:
+        raise ValueError("min_non_null_percentage must be between 0 and 100")
+    if not isinstance(min_distinct_values, int) or isinstance(min_distinct_values, bool):
+        raise ValueError("min_distinct_values must be an integer >= 1")
+    if min_distinct_values < 1:
+        raise ValueError("min_distinct_values must be >= 1")
+
+    preserve = [] if preserve is None else preserve
+    if not isinstance(preserve, list) or any(
+        not isinstance(name, str) or not name for name in preserve
+    ):
+        raise ValueError("preserve must be a list of non-empty column names")
+    missing_preserved = [name for name in preserve if name not in df.columns]
+    if missing_preserved:
+        raise ValueError(f"Preserved column '{missing_preserved[0]}' not found in df")
+
+    preserve_set = set(preserve)
+    schema_by_name = {field.name: field.dataType for field in df.schema.fields}
+    aggregate_expressions = [F.count("*").alias("__db_total_rows__")]
+
+    for index, column_name in enumerate(df.columns):
+        column = F.col(column_name)
+        populated = column.isNotNull()
+        if treat_blank_as_null and isinstance(schema_by_name[column_name], StringType):
+            populated = populated & (F.length(F.trim(column)) > 0)
+
+        aggregate_expressions.extend(
+            [
+                F.sum(F.when(populated, 1).otherwise(0)).alias(f"__db_non_null_{index}"),
+                F.countDistinct(F.when(populated, column)).alias(f"__db_distinct_{index}"),
+            ]
+        )
+
+    statistics = df.agg(*aggregate_expressions).collect()[0]
+    total_rows = int(statistics["__db_total_rows__"] or 0)
+    kept_columns = []
+    report_rows = []
+
+    for index, column_name in enumerate(df.columns):
+        non_null_count = int(statistics[f"__db_non_null_{index}"] or 0)
+        distinct_count = int(statistics[f"__db_distinct_{index}"] or 0)
+        non_null_percentage = round(
+            (non_null_count / total_rows * 100) if total_rows else 0.0,
+            4,
+        )
+
+        if column_name in preserve_set:
+            status = "PRESERVED"
+        elif non_null_count == 0:
+            status = "DROPPED_EMPTY"
+        elif non_null_percentage < float(min_non_null_percentage):
+            status = "DROPPED_SPARSE"
+        elif distinct_count < min_distinct_values:
+            status = "DROPPED_CONSTANT"
+        else:
+            status = "KEPT"
+
+        if status in {"PRESERVED", "KEPT"}:
+            kept_columns.append(column_name)
+
+        report_rows.append(
+            (
+                column_name,
+                schema_by_name[column_name].simpleString(),
+                total_rows,
+                non_null_count,
+                non_null_percentage,
+                distinct_count,
+                status,
+            )
+        )
+
+    if not kept_columns:
+        raise ValueError(
+            "No informative columns remain; lower the thresholds or preserve at least one column"
+        )
+
+    clean_df = df.select(*kept_columns)
+    if not return_report:
+        return clean_df
+
+    report_df = df.sparkSession.createDataFrame(
+        report_rows,
+        [
+            "column_name",
+            "data_type",
+            "total_rows",
+            "non_null_count",
+            "non_null_percentage",
+            "distinct_values",
+            "status",
+        ],
+    )
+    return clean_df, report_df
 
 def null_rate(
     df: DataFrame,

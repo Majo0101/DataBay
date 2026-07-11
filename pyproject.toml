@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databay"
-version = "0.2.0"
+version = "0.3.0"
 description = "Data quality and comparison tooling for lakehouse datasets"
 authors = [
     {name = "Marian Bodnar", email = "bodnar.marian@gmail.com"}
@@ -14,7 +14,6 @@ requires-python = ">=3.10"
 dependencies = [
     "pyspark",
     "pandas",
-    "plotly",
     "docker",
     "python-dotenv",
     "ipython",

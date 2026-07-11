@@ -9,9 +9,12 @@ from databay import (
     pk_uniqueness_check,
     regex_check,
     row_level_rules,
+    select_informative_columns,
 )
 from databay.runtime.docker import DockConfig, dock
 from databay.runtime.spark import spark_connect
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
@@ -19,7 +22,7 @@ def spark():
     cfg = DockConfig(
         image="spark-pg-delta",
         name="spark-pg-delta",
-        bind_mounts={"C/landing": "/data/apache"},
+        bind_mounts={},
     )
 
     try:
@@ -763,3 +766,67 @@ def test_cardinality_check_tables_short_summary_and_custom_names(spark):
     assert row["total_rows_master"] == 2
     assert row["overlap_distinct_keys"] == 1
     assert row["relationship_type"] == "N:1"
+
+
+def test_select_informative_columns_returns_clean_dataframe_and_report(spark):
+    df = spark.createDataFrame(
+        [
+            Row(customer_id=1001, name="Ana", country="SK", legacy_code=None, note=""),
+            Row(customer_id=1002, name="Peter", country="SK", legacy_code=None, note="  "),
+            Row(customer_id=1003, name="Lena", country="SK", legacy_code=None, note=None),
+        ],
+        "customer_id long, name string, country string, legacy_code string, note string",
+    )
+
+    clean_df, report = select_informative_columns(
+        df,
+        min_distinct_values=2,
+        preserve=["customer_id"],
+        return_report=True,
+    )
+
+    assert clean_df.columns == ["customer_id", "name"]
+    statuses = {row["column_name"]: row["status"] for row in report.collect()}
+    assert statuses == {
+        "customer_id": "PRESERVED",
+        "name": "KEPT",
+        "country": "DROPPED_CONSTANT",
+        "legacy_code": "DROPPED_EMPTY",
+        "note": "DROPPED_EMPTY",
+    }
+
+
+def test_select_informative_columns_filters_sparse_columns_and_can_keep_blanks(spark):
+    df = spark.createDataFrame(
+        [
+            Row(id=1, sparse="value", blank=""),
+            Row(id=2, sparse=None, blank=""),
+            Row(id=3, sparse=None, blank=""),
+            Row(id=4, sparse=None, blank=""),
+        ]
+    )
+
+    clean_df, report = select_informative_columns(
+        df,
+        min_non_null_percentage=50,
+        treat_blank_as_null=False,
+        return_report=True,
+    )
+
+    assert clean_df.columns == ["id", "blank"]
+    statuses = {row["column_name"]: row["status"] for row in report.collect()}
+    assert statuses["sparse"] == "DROPPED_SPARSE"
+    assert statuses["blank"] == "KEPT"
+
+
+def test_select_informative_columns_validates_configuration(spark):
+    df = spark.createDataFrame([Row(empty=None)], "empty string")
+
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        select_informative_columns(df, min_non_null_percentage=101)
+    with pytest.raises(ValueError, match="integer >= 1"):
+        select_informative_columns(df, min_distinct_values=1.5)
+    with pytest.raises(ValueError, match="Preserved column 'missing'"):
+        select_informative_columns(df, preserve=["missing"])
+    with pytest.raises(ValueError, match="No informative columns remain"):
+        select_informative_columns(df)

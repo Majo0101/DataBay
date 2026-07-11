@@ -11,13 +11,15 @@ from databay import (
 from databay.runtime.docker import DockConfig, dock
 from databay.runtime.spark import spark_connect
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="module")
 def spark():
     cfg = DockConfig(
-        image="spark-delta-pg",
-        name="spark-delta-pg",
-        bind_mounts={"C/landing": "/data/apache"},
+        image="spark-pg-delta",
+        name="spark-pg-delta",
+        bind_mounts={},
     )
 
     try:

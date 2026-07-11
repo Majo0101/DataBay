@@ -12,6 +12,7 @@ from databay.core.metrics import (
 )
 
 from databay.core.quality import (
+    select_informative_columns,
     null_rate,
     pk_uniqueness_check,
     duplicate_check,
@@ -24,10 +25,9 @@ from databay.core.quality import (
 # Make subpackages available
 from databay import core
 from databay import etl
-from databay import reporting
 from databay import runtime
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Core metrics functions
@@ -37,6 +37,7 @@ __all__ = [
     "numeric_diff_check",
     "find_key_set",
     # Core quality functions
+    "select_informative_columns",
     "null_rate",
     "pk_uniqueness_check",
     "duplicate_check",
@@ -47,6 +48,5 @@ __all__ = [
     # Subpackages
     "core",
     "etl",
-    "reporting",
     "runtime",
 ]

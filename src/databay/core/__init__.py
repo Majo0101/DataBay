@@ -11,6 +11,7 @@ from databay.core.metrics import (
 )
 
 from databay.core.quality import (
+    select_informative_columns,
     null_rate,
     pk_uniqueness_check,
     duplicate_check,
@@ -28,6 +29,7 @@ __all__ = [
     "numeric_diff_check",
     "find_key_set",
     # Quality
+    "select_informative_columns",
     "null_rate",
     "pk_uniqueness_check",
     "duplicate_check",

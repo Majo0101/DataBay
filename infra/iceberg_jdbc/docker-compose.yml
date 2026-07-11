@@ -19,7 +19,7 @@ services:
     volumes:
       - iceberg-lakehouse:/lakehouse
       - iceberg-metastore:/metastore/pgdata
-      - C:/landing:/data/apache  # Windows landing folder for CSV files
+      - ../../data/landing:/data/apache  # Repository-owned CSV fixtures/data
     
     # Optional: mount your local notebooks/data
     # - ./notebooks:/home/spark/notebooks

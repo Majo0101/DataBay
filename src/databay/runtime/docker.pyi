@@ -81,32 +81,6 @@ def dock_spark_init(
     """
     ...
 
-def dock_connect(
-    app_name: str = "DataBay",
-    host: str = "localhost",
-    port: int = 15002,
-    timeout: int = 8,
-    check_interval: float = 0.2,
-) -> SparkSession:
-    """
-    Connect to a Spark cluster via Spark Connect protocol.
-    Waits for the port to become available before establishing connection.
-    
-    Args:
-        app_name: Name for the Spark application (default: "DataBay")
-        host: Hostname or IP address of Spark Connect server (default: "localhost")
-        port: Port number for Spark Connect (default: 15002)
-        timeout: Maximum time in seconds to wait for connection (default: 8)
-        check_interval: Time in seconds between connection attempts (default: 0.2)
-    
-    Returns:
-        SparkSession connected to the remote Spark cluster
-    
-    Raises:
-        TimeoutError: If Spark Connect is not available within the timeout period
-    """
-    ...
-
 def dock_shutdown(cfg: DockConfig, remove: bool = False) -> None:
     """
     Stop (and optionally remove) a Docker container.

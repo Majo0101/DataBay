@@ -1,0 +1,4 @@
+customer_id,name,email,balance,is_active
+1001,Ana Novak,ana.novak@example.com,1250.50,true
+1002,Peter Horvat,peter.horvat@example.com,840.00,true
+1003,Lena Kovac,lena.kovac@example.com,0.00,false

@@ -94,7 +94,7 @@ def test_dock_creates_missing_volume_and_runs_new_container(monkeypatch):
         image="spark-pg-delta",
         name="spark-b",
         named_volumes={"lake": "/lakehouse"},
-        bind_mounts={"C:/landing": "/data/apache"},
+        bind_mounts={"/host/landing": "/data/apache"},
         ports={"15002/tcp": 15002},
         env={"A": "B"},
         network="net1",
@@ -113,7 +113,7 @@ def test_dock_creates_missing_volume_and_runs_new_container(monkeypatch):
     assert state["run_kwargs"]["user"] == "1000:1001"
     assert state["run_kwargs"]["volumes"] == {
         "lake": {"bind": "/lakehouse", "mode": "rw"},
-        "C:/landing": {"bind": "/data/apache", "mode": "rw"},
+        "/host/landing": {"bind": "/data/apache", "mode": "rw"},
     }
 
 

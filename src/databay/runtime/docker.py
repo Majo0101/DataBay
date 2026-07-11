@@ -20,7 +20,7 @@ class DockConfig:
     named_volumes: Dict[str, str] = field(default_factory=lambda: {"spark-lakehouse": "/lakehouse", "spark-metastore": "/metastore/pgdata"})
 
     # host path -> container path (Windows path OK)
-    bind_mounts: Dict[str, str] = field(default_factory=lambda: {r"C:": "/data/apache"})
+    bind_mounts: Dict[str, str] = field(default_factory=dict)
 
     env: Dict[str, str] = field(default_factory=dict)
     network: Optional[str] = None
