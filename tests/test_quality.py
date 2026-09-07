@@ -83,6 +83,23 @@ def test_null_rate_threshold_filters_columns(spark):
     assert cols == ["b"]
 
 
+@pytest.mark.parametrize("sort_desc", [True, False])
+def test_null_rate_returns_empty_report_when_all_columns_below_threshold(spark, sort_desc):
+    df = spark.createDataFrame([Row(id=1, name="A"), Row(id=2, name="B")])
+
+    result = null_rate(df, threshold=5.0, sort_desc=sort_desc)
+
+    assert result.collect() == []
+    assert result.dtypes == [
+        ("column_name", "string"),
+        ("total_records", "bigint"),
+        ("null_records", "bigint"),
+        ("non_null_records", "bigint"),
+        ("null_percentage", "double"),
+        ("data_type", "string"),
+    ]
+
+
 def test_duplicate_check_summary_with_null_stats(spark):
     df = spark.createDataFrame(
         [

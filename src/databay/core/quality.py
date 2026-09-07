@@ -2,7 +2,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union, overload
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
+from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
 
 @overload
@@ -220,10 +220,15 @@ def null_rate(
             schema_map.get(col_name, "UNKNOWN")
         ))
     
-    result = df.sparkSession.createDataFrame(
-        rows,
-        ["column_name", "total_records", "null_records", "non_null_records", "null_percentage", "data_type"]
-    )
+    result_schema = StructType([
+        StructField("column_name", StringType(), True),
+        StructField("total_records", LongType(), True),
+        StructField("null_records", LongType(), True),
+        StructField("non_null_records", LongType(), True),
+        StructField("null_percentage", DoubleType(), True),
+        StructField("data_type", StringType(), True),
+    ])
+    result = df.sparkSession.createDataFrame(rows, result_schema)
     
     # Sort by null percentage if requested
     if sort_desc:
