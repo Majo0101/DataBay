@@ -9,21 +9,47 @@ echo "=========================================="
 SPARK_MEMORY=${SPARK_MEMORY:-28}
 SPARK_CORES=${SPARK_CORES:-12}
 
-echo "Configuration: ${SPARK_MEMORY}GB RAM, ${SPARK_CORES} cores"
+# Validate values before using them in arithmetic or generated configuration.
+for name in SPARK_MEMORY SPARK_CORES; do
+    if [[ ! ${!name} =~ ^[1-9][0-9]*$ ]]; then
+        echo "Invalid $name: expected a positive integer" >&2
+        exit 1
+    fi
+done
+
+SPARK_SHUFFLE_PARTITIONS=${SPARK_SHUFFLE_PARTITIONS:-$(awk -v cores="$SPARK_CORES" 'BEGIN {printf "%.0f", cores * 3}')}
+SPARK_BROADCAST_THRESHOLD=${SPARK_BROADCAST_THRESHOLD:-104857600}
+SPARK_MEMORY_FRACTION=${SPARK_MEMORY_FRACTION:-0.8}
+SPARK_STORAGE_FRACTION=${SPARK_STORAGE_FRACTION:-0.3}
+
+if [[ ! $SPARK_SHUFFLE_PARTITIONS =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid SPARK_SHUFFLE_PARTITIONS: expected a positive integer" >&2
+    exit 1
+fi
+if [[ ! $SPARK_BROADCAST_THRESHOLD =~ ^(-1|0|[1-9][0-9]*)$ ]]; then
+    echo "Invalid SPARK_BROADCAST_THRESHOLD: expected bytes (nonnegative integer) or -1" >&2
+    exit 1
+fi
+for name in SPARK_MEMORY_FRACTION SPARK_STORAGE_FRACTION; do
+    if [[ ! ${!name} =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
+        echo "Invalid $name: expected a number between 0 and 1" >&2
+        exit 1
+    fi
+done
+
+echo "Configuration: ${SPARK_MEMORY}GiB Java heap, ${SPARK_CORES} local worker threads"
 
 # Ensure conf directory exists and has permissions
 mkdir -p /opt/spark/conf
 chown -R spark:spark /opt/spark/conf
 
-# Calculate optimal settings from memory and cores
+# Derive local driver settings; tuning defaults can be overridden above.
 DRIVER_MEMORY="${SPARK_MEMORY}g"
 DRIVER_MAX_RESULT=$(awk "BEGIN {printf \"%.0f\", $SPARK_MEMORY * 0.15}")g
-EXECUTOR_MEMORY=$(awk "BEGIN {printf \"%.0f\", $SPARK_MEMORY * 0.2}")g
-SHUFFLE_PARTITIONS=$(awk "BEGIN {printf \"%.0f\", $SPARK_CORES * 3}")
 
 # Generate Spark configuration
 cat > /opt/spark/conf/spark-defaults.conf << EOF
-# Auto-generated from: ${SPARK_MEMORY}GB RAM, ${SPARK_CORES} cores
+# Auto-generated from: ${SPARK_MEMORY}GiB Java heap, ${SPARK_CORES} local worker threads
 
 spark.app.name PowerRig
 spark.master local[$SPARK_CORES]
@@ -36,9 +62,7 @@ spark.driver.host 0.0.0.0
 # Memory & execution
 spark.driver.memory $DRIVER_MEMORY
 spark.driver.maxResultSize $DRIVER_MAX_RESULT
-spark.executor.memory $EXECUTOR_MEMORY
-spark.executor.cores 2
-spark.sql.shuffle.partitions $SHUFFLE_PARTITIONS
+spark.sql.shuffle.partitions $SPARK_SHUFFLE_PARTITIONS
 spark.default.parallelism $SPARK_CORES
 
 # Performance
@@ -46,9 +70,9 @@ spark.sql.adaptive.enabled true
 spark.sql.adaptive.coalescePartitions.enabled true
 spark.sql.execution.arrow.pyspark.enabled true
 spark.sql.files.maxPartitionBytes 268435456
-spark.sql.autoBroadcastJoinThreshold 104857600
-spark.memory.fraction 0.8
-spark.memory.storageFraction 0.3
+spark.sql.autoBroadcastJoinThreshold $SPARK_BROADCAST_THRESHOLD
+spark.memory.fraction $SPARK_MEMORY_FRACTION
+spark.memory.storageFraction $SPARK_STORAGE_FRACTION
 spark.serializer org.apache.spark.serializer.KryoSerializer
 
 # Iceberg catalog

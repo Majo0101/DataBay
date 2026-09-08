@@ -10,7 +10,7 @@ Edit `docker-compose.yml`:
 
 ```yaml
 environment:
-  - SPARK_MEMORY=28    # Your available RAM in GB
+  - SPARK_MEMORY=28    # Java heap in GiB; leave extra RAM for overhead
   - SPARK_CORES=12     # Your available CPU cores
 ```
 
@@ -36,16 +36,23 @@ spark.sql("SHOW DATABASES").show()
 - **Spark 4.0** with remote connection (Spark Connect)
 - **Delta Lake 4.0** for ACID transactions, time travel, and data versioning
 - **PostgreSQL 14** as Hive metastore backend
-- **Auto-configuration** - all Spark settings calculated from your RAM/cores
+- **Auto-configuration** - resource-based defaults with optional tuning overrides
 - **Persistent storage** - data survives restarts
 
 ## How It Works
 
 The container:
 1. Reads `SPARK_MEMORY` and `SPARK_CORES` from docker-compose
-2. Calculates optimal Spark settings (memory, partitions, etc.)
+2. Derives driver memory and parallelism, then applies optional tuning overrides
 3. Generates `/opt/spark/conf/spark-defaults.conf` with Delta Lake config
 4. Starts PostgreSQL + Spark Connect
+
+Clients use Spark Connect. The server executes work with `local[N]`, where
+`N = SPARK_CORES`; there are no separate executor JVMs to size.
+`SPARK_MEMORY` sets the driver Java heap in GiB, not a container memory limit.
+Allow additional RAM for native memory, Python workers, PostgreSQL and the OS.
+The embedded PostgreSQL stores catalog metadata; the standalone test database
+is a separate service and need not run alongside Spark.
 
 ## Example Usage
 
@@ -169,8 +176,11 @@ df.show()
 # View logs
 docker compose logs -f
 
-# Restart with new settings
-docker compose restart
+# Apply changed environment values in docker-compose.yml
+docker compose up -d
+
+# Apply changes to Dockerfile or start.sh
+docker compose up -d --build
 
 # Stop
 docker compose down
@@ -205,26 +215,43 @@ Persistent and mounted data:
 
 ## Performance Tuning
 
-Just adjust these two values in docker-compose.yml:
+Set heap and worker threads for the current machine in `docker-compose.yml`:
 
 ```yaml
 environment:
-  - SPARK_MEMORY=64    # More memory = larger datasets
-  - SPARK_CORES=24     # More cores = more parallelism
+  - SPARK_MEMORY=64    # Java heap in GiB, excluding overhead
+  - SPARK_CORES=24     # Local worker threads
 ```
 
-Everything else is calculated automatically.
+Optional environment variables let you tune individual workloads. Omitted or
+empty overrides retain the existing project defaults:
+
+| Variable | Default | Accepted values / purpose |
+| --- | --- | --- |
+| `SPARK_SHUFFLE_PARTITIONS` | `3 * SPARK_CORES` | Positive integer; initial SQL shuffle partitions |
+| `SPARK_BROADCAST_THRESHOLD` | `104857600` (100 MiB) | Nonnegative integer bytes; `-1` disables automatic broadcast |
+| `SPARK_MEMORY_FRACTION` | `0.8` | Decimal from 0 to 1; Spark execution/storage memory fraction |
+| `SPARK_STORAGE_FRACTION` | `0.3` | Decimal from 0 to 1; fraction of that region protected for storage |
+
+`SPARK_MEMORY` and `SPARK_CORES` accept positive integers. Invalid values stop
+startup with the variable name in the error. AQE and partition coalescing remain
+enabled. These defaults are heuristics; compare task duration, spills and memory
+usage in Spark UI on representative data before changing them.
+
+Uncomment the optional entries in Compose to override them, then run
+`docker compose up -d` from this directory and reconnect your Spark session.
+`docker compose restart` reuses the existing container environment and does not
+apply Compose environment changes. Rebuild with `docker compose up -d --build`
+after changing the startup script or Dockerfile.
 
 ## What Gets Calculated
 
 From your SPARK_MEMORY and SPARK_CORES, the system auto-calculates:
 
 - Driver memory allocation
-- Executor memory allocation  
-- Shuffle partitions (3x cores)
+- Shuffle partitions (3x cores unless overridden)
 - Default parallelism (= cores)
-- Max result size (15% of memory)
-- Delta Lake optimizations
+- Max result size (15% of memory, rounded to whole GiB)
 
 ## Key Differences: Delta Lake vs Iceberg
 

@@ -6,11 +6,15 @@ services:
     image: spark-pg-delta
     container_name: spark-pg-delta
     
-    # Set your available RAM and CPU cores here
-    # All Spark settings will be calculated automatically
+    # Set Java heap (GiB) and local worker threads; leave RAM for overhead.
+    # Optional tuning overrides retain existing defaults when omitted.
     environment:
-      - SPARK_MEMORY=28      # GB of RAM for Spark
-      - SPARK_CORES=12       # Number of CPU cores
+      # - SPARK_SHUFFLE_PARTITIONS=48  # Default: 3 * SPARK_CORES
+      # - SPARK_BROADCAST_THRESHOLD=10485760  # Bytes; default 104857600; -1 disables
+      # - SPARK_MEMORY_FRACTION=0.6   # Default: 0.8
+      # - SPARK_STORAGE_FRACTION=0.5  # Default: 0.3
+      - SPARK_MEMORY=28      # Driver Java heap in GiB
+      - SPARK_CORES=12       # Local worker threads
     
     ports:
       - "4040:4040"   # Spark UI
