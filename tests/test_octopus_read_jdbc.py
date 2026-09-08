@@ -255,6 +255,55 @@ def test_read_jdbc_schema_override_applied(spark_session, seeded_tables):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("infer_schema", [True, False])
+@pytest.mark.parametrize("partial", [True, False])
+def test_read_jdbc_custom_schema_converts_values_and_preserves_nulls(spark_session, infer_schema, partial):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+    fields = [StructField("id", StringType(), True)]
+    if not partial:
+        fields.append(StructField("amount", DoubleType(), True))
+
+    result = octopus.read_jdbc(
+        queries=[("SELECT * FROM (VALUES (123::bigint, 2.5::double precision), "
+                  "(NULL::bigint, NULL::double precision)) AS source(id, amount)", "converted")],
+        schema=StructType(fields),
+        infer_schema=infer_schema,
+    )["converted"]
+
+    assert result.dtypes == [("id", "string"), ("amount", "double")]
+    assert [tuple(row) for row in result.orderBy(F.col("id").asc_nulls_last()).collect()] == [
+        ("123", 2.5), (None, None),
+    ]
+
+
+@pytest.mark.integration
+def test_read_jdbc_custom_schema_rejects_missing_column(spark_session):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+
+    with pytest.raises(ValueError, match="missing.*not found"):
+        octopus.read_jdbc(
+            queries=[("SELECT 123::bigint AS id", "converted")],
+            schema=StructType([StructField("missing", StringType(), True)]),
+        )
+
+
+@pytest.mark.integration
+def test_read_jdbc_custom_schema_quotes_literal_column_names(spark_session):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+
+    result = octopus.read_jdbc(
+        queries=[('SELECT 123::bigint AS "customer.`id"', "converted")],
+        schema=StructType([StructField("customer.`id", StringType(), True)]),
+    )["converted"]
+
+    assert result.dtypes == [("customer.`id", "string")]
+    assert tuple(result.collect()[0]) == ("123",)
+
+
+@pytest.mark.integration
 def test_read_jdbc_raises_for_wrong_credentials(spark_session):
     octopus = Octopus(spark=spark_session, engine="postgresql")
     _set_env_vars(octopus, WRONG_TEST_PG_CONFIG)

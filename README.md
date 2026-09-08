@@ -285,6 +285,21 @@ Spark uses the bounds to calculate partition strides; the bounds are not a row f
 
 Choose partition settings from source statistics and database capacity rather than Spark capacity alone. Validate them on a small workload before using them against a production database.
 
+### JDBC read type overrides
+
+`Octopus.read_jdbc()` and `Octopus.feed_spark()` accept a full or partial
+`StructType` through `schema`. DataBay passes these type overrides to JDBC's
+`customSchema` option. For example, `StructType([StructField("id", StringType())])`
+reads `id` as text and leaves other columns at their JDBC-inferred types, even
+when `infer_schema=False`. Import these types from `pyspark.sql.types`.
+
+Field names must exactly match the query result column names; missing or duplicate
+names raise `ValueError`. This controls read types, not column order, projection,
+nullability, or field metadata. Conversions depend on the JDBC driver and source
+values, so incompatible conversions can still fail. No source database schema is
+modified. `feed_spark()` writes tables sequentially; a failure does not roll back
+tables written earlier in the same call.
+
 ## Configuration
 
 ### Docker Container Setup

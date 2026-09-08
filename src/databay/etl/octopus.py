@@ -2,10 +2,11 @@ import os
 import csv
 import time
 
-from typing import Optional, Any
+from typing import Optional
 from databay.runtime.docker import DockConfig
 
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType
 
 
 class Octopus:
@@ -149,6 +150,29 @@ class Octopus:
         raise ValueError(f"Unsupported engine: {engine}")
 
 
+    def _load_jdbc(self, reader, schema: Optional[StructType]):
+        """Apply JDBC type overrides and reject names absent from the query result."""
+        if schema is not None:
+            if not isinstance(schema, StructType):
+                raise TypeError("schema must be a pyspark.sql.types.StructType")
+            names = schema.fieldNames()
+            if len(names) != len(set(names)):
+                raise ValueError("schema must not contain duplicate column names")
+            custom_schema = ", ".join(
+                f"`{field.name.replace('`', '``')}` {field.dataType.simpleString()}"
+                for field in schema.fields
+            )
+            reader = reader.option("customSchema", custom_schema)
+
+        df = reader.load()
+        if schema is not None:
+            # Spark ignores unknown customSchema fields; fail before returning or writing data.
+            columns = set(df.columns)
+            missing = [name for name in schema.fieldNames() if name not in columns]
+            if missing:
+                raise ValueError(f"schema column(s) {missing!r} not found in JDBC query result")
+        return df
+
     def feed_spark(
         self,
         queries,
@@ -160,7 +184,7 @@ class Octopus:
         lower_bound: Optional[int] = None,
         upper_bound: Optional[int] = None,
         infer_schema: bool = True,
-        schema: Optional[Any] = None,
+        schema: Optional[StructType] = None,
         trust_server_certificate: bool = True,
         encrypt: bool = False,
     ):
@@ -178,7 +202,10 @@ class Octopus:
             lower_bound: Minimum bound for partition_column when parallel_read=True
             upper_bound: Maximum bound for partition_column when parallel_read=True
             infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
-            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            schema: Optional StructType of JDBC read type overrides (full or partial).
+                    Names must exactly match query result columns; unspecified columns keep
+                    JDBC-inferred types. Takes precedence over infer_schema. Conversions
+                    depend on JDBC driver support; nullability/metadata are not enforced.
             trust_server_certificate: For MSSQL, trust server certificate (default: True)
             encrypt: For MSSQL, use encryption for connection (default: False)
             
@@ -227,10 +254,7 @@ class Octopus:
                     .option("numPartitions", num_partitions)
                 )
 
-            if schema is not None:
-                reader = reader.schema(schema)
-
-            df = reader.load()
+            df = self._load_jdbc(reader, schema)
 
             if schema is None and not infer_schema:
                 df = df.select([F.col(c).cast("string").alias(c) for c in df.columns])
@@ -254,7 +278,7 @@ class Octopus:
         lower_bound: Optional[int] = None,
         upper_bound: Optional[int] = None,
         infer_schema: bool = True,
-        schema: Optional[Any] = None,
+        schema: Optional[StructType] = None,
         trust_server_certificate: bool = True,
         encrypt: bool = False,
     ):
@@ -270,7 +294,10 @@ class Octopus:
             lower_bound: Minimum bound for partition_column when parallel_read=True
             upper_bound: Maximum bound for partition_column when parallel_read=True
             infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
-            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            schema: Optional StructType of JDBC read type overrides (full or partial).
+                    Names must exactly match query result columns; unspecified columns keep
+                    JDBC-inferred types. Takes precedence over infer_schema. Conversions
+                    depend on JDBC driver support; nullability/metadata are not enforced.
             trust_server_certificate: For MSSQL, trust server certificate (default: True)
             encrypt: For MSSQL, use encryption for connection (default: False)
             
@@ -325,10 +352,7 @@ class Octopus:
                     .option("numPartitions", num_partitions)
                 )
 
-            if schema is not None:
-                reader = reader.schema(schema)
-
-            df = reader.load()
+            df = self._load_jdbc(reader, schema)
 
             if schema is None and not infer_schema:
                 df = df.select([F.col(c).cast("string").alias(c) for c in df.columns])

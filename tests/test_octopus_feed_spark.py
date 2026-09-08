@@ -278,6 +278,48 @@ def test_feed_spark_schema_override_applied(spark_session, seeded_source_tables)
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("infer_schema", [True, False])
+@pytest.mark.parametrize("partial", [True, False])
+def test_feed_spark_custom_schema_persists_converted_values(spark_session, infer_schema, partial):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+    fields = [StructField("id", StringType(), True)]
+    if not partial:
+        fields.append(StructField("amount", DoubleType(), True))
+    table_name = f"custom_schema_{partial}_{infer_schema}".lower()
+    target = f"octopus_feed_test.{table_name}"
+
+    try:
+        octopus.feed_spark(
+            queries=[("SELECT * FROM (VALUES (123::bigint, 2.5::double precision), "
+                      "(NULL::bigint, NULL::double precision)) AS source(id, amount)", table_name)],
+            target_schema="octopus_feed_test",
+            schema=StructType(fields),
+            infer_schema=infer_schema,
+        )
+        result = spark_session.table(target)
+        assert result.dtypes == [("id", "string"), ("amount", "double")]
+        assert [tuple(row) for row in result.orderBy(F.col("id").asc_nulls_last()).collect()] == [
+            ("123", 2.5), (None, None),
+        ]
+    finally:
+        spark_session.sql(f"DROP TABLE IF EXISTS {target}")
+
+
+@pytest.mark.integration
+def test_feed_spark_custom_schema_rejects_missing_column_before_write(spark_session):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+
+    with pytest.raises(ValueError, match="missing.*not found"):
+        octopus.feed_spark(
+            queries=[("SELECT 123::bigint AS id", "custom_schema_missing")],
+            target_schema="octopus_feed_test",
+            schema=StructType([StructField("missing", StringType(), True)]),
+        )
+
+
+@pytest.mark.integration
 def test_feed_spark_raises_for_wrong_credentials(spark_session, seeded_source_tables):
     octopus = Octopus(spark=spark_session, engine="postgresql")
     _set_env_vars(octopus, WRONG_TEST_PG_CONFIG)

@@ -59,7 +59,10 @@ class Octopus:
             lower_bound: Minimum bound for partition_column when parallel_read=True
             upper_bound: Maximum bound for partition_column when parallel_read=True
             infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
-            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            schema: Optional StructType of JDBC read type overrides (full or partial).
+                    Names must exactly match query result columns; unspecified columns keep
+                    JDBC-inferred types. Takes precedence over infer_schema. Conversions
+                    depend on JDBC driver support; nullability/metadata are not enforced.
             trust_server_certificate: For MSSQL, trust server certificate (default: True)
             encrypt: For MSSQL, use encryption for connection (default: False)
             
@@ -94,7 +97,10 @@ class Octopus:
             lower_bound: Minimum bound for partition_column when parallel_read=True
             upper_bound: Maximum bound for partition_column when parallel_read=True
             infer_schema: If True, uses JDBC metadata; if False, casts all to string (default: True)
-            schema: Optional custom PySpark schema. Overrides infer_schema if provided
+            schema: Optional StructType of JDBC read type overrides (full or partial).
+                    Names must exactly match query result columns; unspecified columns keep
+                    JDBC-inferred types. Takes precedence over infer_schema. Conversions
+                    depend on JDBC driver support; nullability/metadata are not enforced.
             trust_server_certificate: For MSSQL, trust server certificate (default: True)
             encrypt: For MSSQL, use encryption for connection (default: False)
             
