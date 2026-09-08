@@ -49,10 +49,18 @@ def sparksql_magic(spark: SparkSession) -> bool:
     
     Usage:
         %%sparksql                 → df.show()
-        %%sparksql pandas          → display Pandas DataFrame
+        %%sparksql pandas          → display up to 10000 Pandas rows
+        %%sparksql pandas customers_pd --limit 5000 → display and assign Pandas result
         %%sparksql varname         → assign df to a Python variable
         %%sparksql view viewname   → register df as a Spark temporary view
     
     Supports {python_variable} placeholders inside SQL queries.
+    Pandas syntax: pandas [variable] [--limit positive_integer].
+    The variable must be a Python identifier, not a keyword; an existing variable
+    is replaced after successful conversion. The default limit is 10000.
+    Spark applies limit + 1 before toPandas to detect truncation in one action;
+    the extra row is discarded and a warning is issued when rows are omitted.
+    A row limit is not a memory limit: wide rows may still use substantial RAM.
+    Without ORDER BY, the selected rows are not guaranteed.
     """
     ...

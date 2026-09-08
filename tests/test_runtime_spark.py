@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, cast
 
 import pytest
+import pandas as pd
+import warnings
 
 from databay.runtime import spark as runtime_spark
 
@@ -132,7 +134,7 @@ def test_sparksql_magic_pandas_and_view_branches(monkeypatch):
     def _spark_sql(query):
         return SimpleNamespace(
             show=lambda truncate=False: None,
-            toPandas=lambda: {"rows": [1]},
+            limit=lambda n: SimpleNamespace(toPandas=lambda: pd.DataFrame({"rows": [1]})),
             createOrReplaceTempView=lambda name: calls.__setitem__("view", name),
         )
 
@@ -142,8 +144,105 @@ def test_sparksql_magic_pandas_and_view_branches(monkeypatch):
     magic("pandas", "SELECT 1")
     magic("view tmp_v", "SELECT 2")
 
-    assert calls["display"] == [{"rows": [1]}]
+    assert len(calls["display"]) == 1
+    assert calls["display"][0].to_dict("list") == {"rows": [1]}
     assert calls["view"] == "tmp_v"
+
+
+@pytest.mark.parametrize("rows", [0, 2, 3, 4])
+@pytest.mark.parametrize("named", [False, True])
+def test_sparksql_magic_pandas_limit_before_conversion(monkeypatch, rows, named):
+    namespace = {"customers_pd": "old value"}
+    calls = []
+    displayed = []
+    source = pd.DataFrame({"id": range(rows)})
+
+    def limit(count):
+        calls.append(("limit", count))
+
+        def convert():
+            calls.append(("toPandas", count))
+            return source.iloc[:count].copy()
+
+        return SimpleNamespace(toPandas=convert)
+
+    # No toPandas on the original object: unbounded conversion would fail.
+    magic = _setup_magic(monkeypatch, namespace, lambda query: SimpleNamespace(limit=limit))
+    monkeypatch.setattr(runtime_spark, "display", displayed.append)
+    line = "pandas" + (" customers_pd" if named else "") + " --limit 3"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        magic(line, "SELECT id FROM customers ORDER BY id")
+    assert calls == [("limit", 4), ("toPandas", 4)]
+    pd.testing.assert_frame_equal(displayed[0], source.iloc[:3])
+    assert len(caught) == (1 if rows > 3 else 0)
+    if caught:
+        assert "truncated to 3 rows" in str(caught[0].message)
+    if named:
+        assert namespace["customers_pd"] is displayed[0]
+    else:
+        assert namespace["customers_pd"] == "old value"
+
+
+def test_sparksql_magic_pandas_default_limit(monkeypatch):
+    limits = []
+    displayed = []
+
+    def limit(count):
+        limits.append(count)
+        return SimpleNamespace(toPandas=lambda: pd.DataFrame({"id": range(count)}))
+
+    magic = _setup_magic(monkeypatch, {}, lambda query: SimpleNamespace(limit=limit))
+    monkeypatch.setattr(runtime_spark, "display", displayed.append)
+    with pytest.warns(UserWarning, match="truncated to 10000 rows"):
+        magic("pandas", "SELECT * FROM customers")
+    assert limits == [10001]
+    assert len(displayed[0]) == 10000
+
+
+@pytest.mark.parametrize("arguments", [
+    "pandas --limit", "pandas --limit 0", "pandas --limit -1",
+    "pandas --limit 1.5", "pandas --limit text", "pandas --limit 2147483647",
+    "pandas --unknown 3", "pandas a b", "pandas class", "pandas bad.name",
+    "pandas --limit 3 --limit 4",
+])
+def test_sparksql_magic_invalid_pandas_arguments_do_not_execute_sql(monkeypatch, arguments):
+    def unexpected_sql(query):
+        pytest.fail("Invalid arguments must be rejected before SQL execution")
+
+    magic = _setup_magic(monkeypatch, {}, unexpected_sql)
+    with pytest.raises(ValueError):
+        magic(arguments, "SELECT 1")
+
+
+def test_sparksql_magic_pandas_failed_conversion_preserves_variable(monkeypatch):
+    namespace = {"customers_pd": "original"}
+
+    def fail():
+        raise RuntimeError("conversion failed")
+
+    magic = _setup_magic(monkeypatch, namespace, lambda query: SimpleNamespace(
+        limit=lambda count: SimpleNamespace(toPandas=fail)
+    ))
+    with pytest.raises(RuntimeError, match="conversion failed"):
+        magic("pandas customers_pd", "SELECT 1")
+    assert namespace["customers_pd"] == "original"
+
+
+@pytest.mark.integration
+def test_sparksql_magic_pandas_real_connect(monkeypatch):
+    spark = runtime_spark.spark_connect(timeout=20)
+    namespace = {}
+    displayed = []
+    try:
+        magic = _setup_magic(monkeypatch, namespace, spark.sql)
+        monkeypatch.setattr(runtime_spark, "display", displayed.append)
+        with pytest.warns(UserWarning, match="truncated to 3 rows"):
+            magic("pandas customers_pd --limit 3", "SELECT id FROM range(10) ORDER BY id")
+        assert namespace["customers_pd"] is displayed[0]
+        assert displayed[0]["id"].tolist() == [0, 1, 2]
+    finally:
+        spark.stop()
 
 
 def test_sparksql_magic_variable_assignment_and_template_errors(monkeypatch):

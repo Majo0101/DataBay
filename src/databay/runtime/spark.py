@@ -1,4 +1,6 @@
 import time
+import keyword
+import warnings
 
 from pyspark.sql import SparkSession
 
@@ -77,16 +79,44 @@ def spark_connect(
 def sparksql_magic(spark:SparkSession):
     """
     %%sparksql                 → df.show()
-    %%sparksql pandas          → display Pandas DataFrame
+    %%sparksql pandas          → display up to 10000 Pandas rows
+    %%sparksql pandas customers_pd --limit 5000 → display and assign Pandas result
     %%sparksql varname         → assign df to a Python variable
     %%sparksql view viewname   → register df as a Spark temporary view
     Supports {python_variable} placeholders inside SQL queries.
+    Pandas syntax: pandas [variable] [--limit positive_integer].
+    The variable must be a Python identifier, not a keyword; an existing variable
+    is replaced after successful conversion. The default limit is 10000.
+    Spark applies limit + 1 before toPandas to detect truncation in one action;
+    the extra row is discarded and a warning is issued when rows are omitted.
+    A row limit is not a memory limit: wide rows may still use substantial RAM.
+    Without ORDER BY, the selected rows are not guaranteed.
     """
 
     @register_cell_magic
     def sparksql(line, cell):
         if spark is None:
             raise RuntimeError("No active SparkSession found.")
+
+        args = line.strip().split()
+        pandas_mode = bool(args) and args[0].lower() == "pandas"
+        pandas_variable = None
+        pandas_limit = 10000
+        if pandas_mode:
+            remaining = args[1:]
+            if remaining and not remaining[0].startswith("--"):
+                pandas_variable = remaining.pop(0)
+                if not pandas_variable.isidentifier() or keyword.iskeyword(pandas_variable):
+                    raise ValueError("Pandas variable must be a valid Python identifier, not a keyword")
+            if remaining:
+                if len(remaining) != 2 or remaining[0] != "--limit":
+                    raise ValueError("Usage: %%sparksql pandas [variable] [--limit positive_integer]")
+                try:
+                    pandas_limit = int(remaining[1])
+                except ValueError:
+                    raise ValueError("--limit must be a positive integer") from None
+                if not 1 <= pandas_limit <= 2147483646:
+                    raise ValueError("--limit must be between 1 and 2147483646")
 
         # Clean cell content (no Quarto dependency)
         query_raw = cell.strip()
@@ -99,14 +129,25 @@ def sparksql_magic(spark:SparkSession):
             raise KeyError(f"Missing Python variable in SQL template: {e}")
 
         df = spark.sql(query)
-        args = line.strip().split()
 
         if not args:
             df.show(truncate=False)
             return
 
-        if len(args) == 1 and args[0].lower() == "pandas":
-            display(df.toPandas())
+        if pandas_mode:
+            pandas_df = df.limit(pandas_limit + 1).toPandas()
+            if len(pandas_df) > pandas_limit:
+                pandas_df = pandas_df.iloc[:pandas_limit].copy()
+                warnings.warn(
+                    f"Pandas result truncated to {pandas_limit} rows. "
+                    "Increase --limit to retrieve more rows. A row limit is not "
+                    "a memory limit; without ORDER BY the selected rows are not guaranteed.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            if pandas_variable is not None:
+                ns[pandas_variable] = pandas_df
+            display(pandas_df)
             return
 
         if len(args) == 2 and args[0].lower() == "view":
