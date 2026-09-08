@@ -4,6 +4,8 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
+from ._columns import literal_col
+
 
 def compare_datasets(
     df_a: DataFrame,
@@ -30,8 +32,8 @@ def compare_datasets(
     if cols == ["*"]:
         cols = df_a.columns
 
-    a = df_a.select(*cols)
-    b = df_b.select(*cols)
+    a = df_a.select(*[literal_col(c) for c in cols])
+    b = df_b.select(*[literal_col(c) for c in cols])
 
     cnt_a = a.count()
     cnt_b = b.count()
@@ -154,12 +156,12 @@ def compare_columns_by_key(
     _A = "__a__"
     _B = "__b__"
 
-    select_a = [F.col(k) for k in key_cols]
-    select_b = [F.col(k) for k in key_cols]
+    select_a = [literal_col(k) for k in key_cols]
+    select_b = [literal_col(k) for k in key_cols]
 
     for c in compare_cols:
-        select_a.append(F.col(c).alias(f"{_A}{c}"))
-        select_b.append(F.col(c).alias(f"{_B}{c}"))
+        select_a.append(literal_col(c).alias(f"{_A}{c}"))
+        select_b.append(literal_col(c).alias(f"{_B}{c}"))
 
     a = df_a.select(select_a).withColumn("__db_a_present__", F.lit(1))
     b = df_b.select(select_b).withColumn("__db_b_present__", F.lit(1))
@@ -172,8 +174,8 @@ def compare_columns_by_key(
         agg_exprs = [F.count("*").alias(total_alias)]
 
         for c in compare_cols:
-            col_a = F.col(f"{_A}{c}")
-            col_b = F.col(f"{_B}{c}")
+            col_a = literal_col(f"{_A}{c}")
+            col_b = literal_col(f"{_B}{c}")
             agg_exprs.append(
                 F.sum(
                     F.when(
@@ -207,11 +209,11 @@ def compare_columns_by_key(
 
     else:
         # Return detailed differences
-        select_exprs = key_cols.copy()
+        select_exprs = [literal_col(c) for c in key_cols]
 
         for c in compare_cols:
-            col_a = F.col(f"{_A}{c}")
-            col_b = F.col(f"{_B}{c}")
+            col_a = literal_col(f"{_A}{c}")
+            col_b = literal_col(f"{_B}{c}")
 
             is_match = F.when(
                 F.col("__db_a_present__").isNull() | F.col("__db_b_present__").isNull(),
@@ -235,7 +237,7 @@ def compare_columns_by_key(
         # Filter to only rows where at least one column differs
         diff_filter = F.lit(False)
         for c in compare_cols:
-            diff_filter = diff_filter | ~F.col(f"{c}_match")
+            diff_filter = diff_filter | ~literal_col(f"{c}_match")
 
         detailed = detailed.filter(diff_filter)
 
@@ -403,12 +405,12 @@ def numeric_diff_check(
     _A = "__a__"
     _B = "__b__"
 
-    select_a = [F.col(k) for k in key_cols]
-    select_b = [F.col(k) for k in key_cols]
+    select_a = [literal_col(k) for k in key_cols]
+    select_b = [literal_col(k) for k in key_cols]
 
     for c in numeric_cols:
-        select_a.append(F.col(c).alias(f"{_A}{c}"))
-        select_b.append(F.col(c).alias(f"{_B}{c}"))
+        select_a.append(literal_col(c).alias(f"{_A}{c}"))
+        select_b.append(literal_col(c).alias(f"{_B}{c}"))
 
     a = df_a.select(select_a)
     b = df_b.select(select_b)
@@ -424,8 +426,8 @@ def numeric_diff_check(
         agg_exprs = [F.count("*").alias("total_compared")]
 
         for col in numeric_cols:
-            col_a = F.col(f"{_A}{col}")
-            col_b = F.col(f"{_B}{col}")
+            col_a = literal_col(f"{_A}{col}")
+            col_b = literal_col(f"{_B}{col}")
 
             raw_diff = F.abs(col_a - col_b)
 
@@ -477,11 +479,11 @@ def numeric_diff_check(
 
     else:
 
-        select_exprs = key_cols.copy()
+        select_exprs = [literal_col(c) for c in key_cols]
 
         for col in numeric_cols:
-            col_a = F.col(f"{_A}{col}")
-            col_b = F.col(f"{_B}{col}")
+            col_a = literal_col(f"{_A}{col}")
+            col_b = literal_col(f"{_B}{col}")
 
             raw_diff = F.abs(col_a - col_b)
             abs_diff = F.when(raw_diff <= tolerance, F.lit(0.0)).otherwise(raw_diff)
@@ -506,7 +508,7 @@ def numeric_diff_check(
 
         diff_filter = F.lit(False)
         for col in numeric_cols:
-            diff_filter = diff_filter | F.col(f"{col}_is_diff")
+            diff_filter = diff_filter | literal_col(f"{col}_is_diff")
 
         detailed = detailed.filter(diff_filter)
 
@@ -516,7 +518,7 @@ def numeric_diff_check(
             if diff_type in ["percentage", "both"]:
                 output_cols.append(f"{col}_pct_diff")
 
-        return detailed.select(output_cols)
+        return detailed.select(*[literal_col(c) for c in output_cols])
 
 
 def find_key_set(
@@ -561,7 +563,7 @@ def find_key_set(
 
     search_keys_df = (
         keys_df
-        .select(F.col(key_column).cast("string").alias("key_value"))
+        .select(literal_col(key_column).cast("string").alias("key_value"))
         .where(F.col("key_value").isNotNull())
         .distinct()
     )
@@ -579,7 +581,7 @@ def find_key_set(
                 continue
 
             column_values = (
-                df.select(F.col(col_name).cast("string").alias("key_value"))
+                df.select(literal_col(col_name).cast("string").alias("key_value"))
                 .where(F.col("key_value").isNotNull())
                 .distinct()
             )

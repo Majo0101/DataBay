@@ -4,6 +4,8 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
+from ._columns import literal_col, quote_identifier
+
 
 @overload
 def select_informative_columns(
@@ -81,7 +83,7 @@ def select_informative_columns(
     aggregate_expressions = [F.count("*").alias("__db_total_rows__")]
 
     for index, column_name in enumerate(df.columns):
-        column = F.col(column_name)
+        column = literal_col(column_name)
         populated = column.isNotNull()
         if treat_blank_as_null and isinstance(schema_by_name[column_name], StringType):
             populated = populated & (F.length(F.trim(column)) > 0)
@@ -137,7 +139,7 @@ def select_informative_columns(
             "No informative columns remain; lower the thresholds or preserve at least one column"
         )
 
-    clean_df = df.select(*kept_columns)
+    clean_df = df.select(*[literal_col(c) for c in kept_columns])
     if not return_report:
         return clean_df
 
@@ -191,7 +193,7 @@ def null_rate(
     null_counts = []
     for col_name in df.columns:
         null_counts.append(
-            F.sum(F.when(F.col(col_name).isNull(), 1).otherwise(0)).alias(col_name)
+            F.sum(F.when(literal_col(col_name).isNull(), 1).otherwise(0)).alias(col_name)
         )
     
     # Execute aggregation once
@@ -304,14 +306,14 @@ def duplicate_check(
     null_stats = {}
     if check_nulls:
         null_exprs = [
-            F.sum(F.when(F.col(c).isNull(), 1).otherwise(0)).alias(c)
+            F.sum(F.when(literal_col(c).isNull(), 1).otherwise(0)).alias(c)
             for c in cols_to_check
         ]
         null_result = df.select(null_exprs).collect()[0].asDict()
         null_stats = {k: v or 0 for k, v in null_result.items()}
     
     # Group by selected columns and count occurrences
-    grouped = df.groupBy(*cols_to_check).agg(F.count("*").alias("duplicate_count"))
+    grouped = df.groupBy(*[literal_col(c) for c in cols_to_check]).agg(F.count("*").alias("duplicate_count"))
     
     # Get statistics
     unique_combinations = grouped.count()
@@ -363,7 +365,7 @@ def duplicate_check(
         
         # Reorder columns: duplicate_count first, then the checked columns
         ordered_cols = ["duplicate_count"] + cols_to_check
-        return result.select(*ordered_cols)
+        return result.select(*[literal_col(c) for c in ordered_cols])
 
 
 def pk_uniqueness_check(df: DataFrame, pk_cols: List[str]) -> DataFrame:
@@ -453,7 +455,7 @@ def regex_check(
     # NULL is considered non-matching for regex validation
     match_exprs = {
         col_name: F.when(
-            F.col(col_name).isNotNull() & F.col(col_name).cast("string").rlike(pattern),
+            literal_col(col_name).isNotNull() & literal_col(col_name).cast("string").rlike(pattern),
             1
         ).otherwise(0)
         for col_name, pattern in rules.items()
@@ -492,7 +494,7 @@ def regex_check(
     for rule_order, (col_name, pattern) in enumerate(rules.items()):
         invalid = (
             df.filter(match_exprs[col_name] == 0)
-            .select(F.col(col_name).cast("string").alias("non_matching_value"))
+            .select(literal_col(col_name).cast("string").alias("non_matching_value"))
             .na.fill({"non_matching_value": "<NULL>"})
             .groupBy("non_matching_value")
             .agg(F.count("*").alias("non_matching_count"))
@@ -603,7 +605,7 @@ def row_level_rules(
     # Detailed mode: return failing rows and their frequency
     detailed = None
     if df.columns:
-        row_repr_expr = F.to_json(F.struct(*[F.col(c) for c in df.columns]))
+        row_repr_expr = F.to_json(F.struct(*[literal_col(c) for c in df.columns]))
     else:
         row_repr_expr = F.lit("{}")
 
@@ -706,14 +708,14 @@ def cardinality_check(
     total_rows = df.count()
     left_not_null = F.lit(True)
     for c in left_cols:
-        left_not_null = left_not_null & F.col(c).isNotNull()
+        left_not_null = left_not_null & literal_col(c).isNotNull()
     right_not_null = F.lit(True)
     for c in right_cols:
-        right_not_null = right_not_null & F.col(c).isNotNull()
+        right_not_null = right_not_null & literal_col(c).isNotNull()
 
     pairs = df.select(
-        F.struct(*[F.col(c) for c in left_cols]).alias("_left_key"),
-        F.struct(*[F.col(c) for c in right_cols]).alias("_right_key"),
+        F.struct(*[literal_col(c) for c in left_cols]).alias("_left_key"),
+        F.struct(*[literal_col(c) for c in right_cols]).alias("_right_key"),
     ).filter(
         left_not_null & right_not_null
     )
@@ -789,11 +791,11 @@ def cardinality_check(
         )
 
     if top_n == 0:
-        left_schema = ", ".join([f"{c} string" for c in left_cols])
+        left_schema = ", ".join([f"{quote_identifier(c)} string" for c in left_cols])
         right_out_names = []
         for c in right_cols:
             right_out_names.append(f"{c}_right" if c in left_cols else c)
-        right_schema = ", ".join([f"{c} string" for c in right_out_names])
+        right_schema = ", ".join([f"{quote_identifier(c)} string" for c in right_out_names])
         return df.sparkSession.createDataFrame(
             [],
             f"{left_schema}, {right_schema}, rows_in_left long, rows_in_right long",
@@ -818,8 +820,8 @@ def cardinality_check(
 
     detailed = (
         detailed
-        .select(*left_cols, *right_out_names, "rows_in_left", "rows_in_right")
-        .orderBy(F.greatest(F.col("rows_in_left"), F.col("rows_in_right")).desc(), *[F.col(c) for c in left_cols])
+        .select(*[literal_col(c) for c in left_cols + right_out_names], "rows_in_left", "rows_in_right")
+        .orderBy(F.greatest(F.col("rows_in_left"), F.col("rows_in_right")).desc(), *[literal_col(c) for c in left_cols])
         .limit(top_n)
     )
     return detailed
@@ -899,17 +901,17 @@ def cardinality_check_tables(
 
     left_not_null = F.lit(True)
     for c in left_cols:
-        left_not_null = left_not_null & F.col(c).isNotNull()
+        left_not_null = left_not_null & literal_col(c).isNotNull()
     right_not_null = F.lit(True)
     for c in right_cols:
-        right_not_null = right_not_null & F.col(c).isNotNull()
+        right_not_null = right_not_null & literal_col(c).isNotNull()
 
     keys_a = (
-        df_a.select(F.struct(*[F.col(c) for c in left_cols]).alias("_key"))
+        df_a.select(F.struct(*[literal_col(c) for c in left_cols]).alias("_key"))
         .filter(left_not_null)
     )
     keys_b = (
-        df_b.select(F.struct(*[F.col(c) for c in right_cols]).alias("_key"))
+        df_b.select(F.struct(*[literal_col(c) for c in right_cols]).alias("_key"))
         .filter(right_not_null)
     )
 
@@ -1002,7 +1004,7 @@ def cardinality_check_tables(
         )
 
     if top_n == 0:
-        key_schema = ", ".join([f"{c} string" for c in left_cols])
+        key_schema = ", ".join([f"{quote_identifier(c)} string" for c in left_cols])
         return df_a.sparkSession.createDataFrame(
             [],
             f"{key_schema}, {rows_in_a_col} long, {rows_in_b_col} long",
@@ -1010,7 +1012,7 @@ def cardinality_check_tables(
 
     detailed = (
         overlap
-        .filter((F.col(rows_in_a_col) > 1) | (F.col(rows_in_b_col) > 1))
+        .filter((literal_col(rows_in_a_col) > 1) | (literal_col(rows_in_b_col) > 1))
     )
 
     for c in left_cols:
@@ -1018,8 +1020,8 @@ def cardinality_check_tables(
 
     detailed = (
         detailed
-        .select(*left_cols, rows_in_a_col, rows_in_b_col)
-        .orderBy(F.greatest(F.col(rows_in_a_col), F.col(rows_in_b_col)).desc(), *[F.col(c) for c in left_cols])
+        .select(*[literal_col(c) for c in left_cols], rows_in_a_col, rows_in_b_col)
+        .orderBy(F.greatest(literal_col(rows_in_a_col), literal_col(rows_in_b_col)).desc(), *[literal_col(c) for c in left_cols])
         .limit(top_n)
     )
     return detailed

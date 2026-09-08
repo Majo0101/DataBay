@@ -267,6 +267,18 @@ Key-based comparisons use the key columns supplied by the caller. DataBay valida
 
 Run `pk_uniqueness_check()` or `duplicate_check()` first when key uniqueness is part of the comparison assumption.
 
+### Column names
+
+Core quality and comparison functions treat column-name arguments as literal
+top-level names. Pass `"customer.id"` directly for a column with that exact name;
+DataBay handles dots, spaces, and embedded backticks without renaming the column.
+The existing `['*']` shorthand still selects all columns where documented.
+
+SQL expressions passed to `row_level_rules()` keep Spark SQL syntax: use
+`` `customer.id` `` for the literal column, or `customer.id` for field `id` inside
+the `customer` struct. To use a nested field with a column-name API, first project
+it to a top-level column. Spark's configured case-sensitivity rules still apply.
+
 ### Null semantics
 
 Column comparison deliberately uses data-quality semantics rather than Spark SQL's normal three-valued equality behavior:
