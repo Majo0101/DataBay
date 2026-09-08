@@ -41,13 +41,15 @@ def select_informative_columns(
 
     Empty columns are always removed unless explicitly preserved. Optional
     thresholds can also remove sparse or constant columns. String blanks are
-    treated as missing values by default. All column statistics are calculated
-    in one Spark aggregation.
+    treated as missing values by default. Required column statistics are calculated
+    in one Spark aggregation. With min_distinct_values=1 and no report, populated
+    counts suffice and distinct counts are skipped.
 
     Args:
         df: Spark DataFrame to profile and project.
         min_non_null_percentage: Minimum populated percentage from 0 to 100.
         min_distinct_values: Minimum number of distinct populated values.
+            The default 1 keeps constants; use 2 to retain varying columns.
         preserve: Columns to retain regardless of their statistics.
         treat_blank_as_null: Treat empty and whitespace-only strings as missing.
         return_report: Return ``(clean_df, report_df)`` when True.
@@ -80,6 +82,7 @@ def select_informative_columns(
 
     preserve_set = set(preserve)
     schema_by_name = {field.name: field.dataType for field in df.schema.fields}
+    needs_distinct_counts = return_report or min_distinct_values > 1
     aggregate_expressions = [F.count("*").alias("__db_total_rows__")]
 
     for index, column_name in enumerate(df.columns):
@@ -88,12 +91,13 @@ def select_informative_columns(
         if treat_blank_as_null and isinstance(schema_by_name[column_name], StringType):
             populated = populated & (F.length(F.trim(column)) > 0)
 
-        aggregate_expressions.extend(
-            [
-                F.sum(F.when(populated, 1).otherwise(0)).alias(f"__db_non_null_{index}"),
-                F.countDistinct(F.when(populated, column)).alias(f"__db_distinct_{index}"),
-            ]
+        aggregate_expressions.append(
+            F.sum(F.when(populated, 1).otherwise(0)).alias(f"__db_non_null_{index}")
         )
+        if needs_distinct_counts:
+            aggregate_expressions.append(
+                F.countDistinct(F.when(populated, column)).alias(f"__db_distinct_{index}")
+            )
 
     statistics = df.agg(*aggregate_expressions).collect()[0]
     total_rows = int(statistics["__db_total_rows__"] or 0)
@@ -102,7 +106,10 @@ def select_informative_columns(
 
     for index, column_name in enumerate(df.columns):
         non_null_count = int(statistics[f"__db_non_null_{index}"] or 0)
-        distinct_count = int(statistics[f"__db_distinct_{index}"] or 0)
+        distinct_count = (
+            int(statistics[f"__db_distinct_{index}"] or 0)
+            if needs_distinct_counts else None
+        )
         non_null_percentage = round(
             (non_null_count / total_rows * 100) if total_rows else 0.0,
             4,
@@ -114,7 +121,7 @@ def select_informative_columns(
             status = "DROPPED_EMPTY"
         elif non_null_percentage < float(min_non_null_percentage):
             status = "DROPPED_SPARSE"
-        elif distinct_count < min_distinct_values:
+        elif needs_distinct_counts and distinct_count < min_distinct_values:
             status = "DROPPED_CONSTANT"
         else:
             status = "KEPT"

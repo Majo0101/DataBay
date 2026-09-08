@@ -836,6 +836,65 @@ def test_select_informative_columns_filters_sparse_columns_and_can_keep_blanks(s
     assert statuses["blank"] == "KEPT"
 
 
+@pytest.mark.parametrize("treat_blank_as_null", [True, False])
+def test_select_informative_columns_skips_distinct_without_report(
+    spark, monkeypatch, treat_blank_as_null
+):
+    from databay.core import quality
+
+    df = spark.createDataFrame(
+        [(1, "SK", None, "", "x"), (2, "SK", None, "  ", None),
+         (3, "SK", None, None, None)],
+        "`customer.id` long, constant string, empty string, blank string, sparse string",
+    )
+    options = dict(
+        min_non_null_percentage=50,
+        preserve=["empty"],
+        treat_blank_as_null=treat_blank_as_null,
+    )
+    expected, report = select_informative_columns(df, return_report=True, **options)
+    counts = {r["column_name"]: r["distinct_values"] for r in report.collect()}
+    assert counts["customer.id"] == 3
+    assert counts["constant"] == 1
+    assert counts["empty"] == 0
+    assert counts["blank"] == (0 if treat_blank_as_null else 2)
+
+    def forbidden_distinct(*args, **kwargs):
+        pytest.fail("The population-only path must not call countDistinct")
+
+    monkeypatch.setattr(quality.F, "countDistinct", forbidden_distinct)
+    actual = select_informative_columns(df, **options)
+    assert actual.columns == (
+        ["customer.id", "constant", "empty"]
+        + ([] if treat_blank_as_null else ["blank"])
+    )
+    assert actual.columns == expected.columns
+    assert actual.collect() == expected.collect()
+
+
+def test_select_informative_columns_varying_values_without_report(spark):
+    df = spark.createDataFrame(
+        [(1, "SK"), (2, "SK"), (3, "SK")], "id long, constant string"
+    )
+    assert select_informative_columns(df, min_distinct_values=2).columns == ["id"]
+
+
+def test_select_informative_columns_empty_input_without_distinct(spark, monkeypatch):
+    from databay.core import quality
+
+    df = spark.createDataFrame([], "id long, empty string")
+
+    def forbidden_distinct(*args, **kwargs):
+        pytest.fail("Empty input must also use the population-only path")
+
+    monkeypatch.setattr(quality.F, "countDistinct", forbidden_distinct)
+    with pytest.raises(ValueError, match="No informative columns remain"):
+        select_informative_columns(df)
+    kept = select_informative_columns(df, preserve=["id"])
+    assert kept.columns == ["id"]
+    assert kept.count() == 0
+
+
 def test_select_informative_columns_validates_configuration(spark):
     df = spark.createDataFrame([Row(empty=None)], "empty string")
 

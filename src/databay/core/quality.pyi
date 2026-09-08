@@ -13,7 +13,26 @@ def select_informative_columns(
     preserve: Optional[List[str]] = None,
     treat_blank_as_null: bool = True,
     return_report: Literal[False] = False,
-) -> DataFrame: ...
+) -> DataFrame:
+    """Return columns with useful observed values.
+
+    Args:
+        df: Spark DataFrame to profile and project.
+        min_non_null_percentage: Minimum populated percentage from 0 to 100.
+        min_distinct_values: Minimum number of distinct populated values.
+            Default 1 keeps constant columns. Use 2 to keep columns whose
+            populated values vary across rows, useful for reverse engineering.
+            With 1 and no report, only populated counts are computed;
+            countDistinct is skipped without changing the selected columns.
+            Higher thresholds use exact distinct counts, not approximations.
+        preserve: Column names to keep regardless of thresholds, even if empty.
+        treat_blank_as_null: Treat empty and whitespace-only strings as missing.
+        return_report: False returns only the projected DataFrame.
+
+    Empty columns are removed unless preserved. Raises ValueError if no
+    columns remain. Original values are retained in the returned DataFrame.
+    """
+    ...
 
 
 @overload
@@ -24,7 +43,28 @@ def select_informative_columns(
     preserve: Optional[List[str]] = None,
     treat_blank_as_null: bool = True,
     return_report: Literal[True] = True,
-) -> Tuple[DataFrame, DataFrame]: ...
+) -> Tuple[DataFrame, DataFrame]:
+    """Return the selected columns and an exact profiling report.
+
+    Args:
+        df: Spark DataFrame to profile and project.
+        min_non_null_percentage: Minimum populated percentage from 0 to 100.
+        min_distinct_values: Minimum number of distinct populated values.
+            Default 1 keeps constant columns. Use 2 to keep columns whose
+            populated values vary across rows, useful for reverse engineering.
+        preserve: Column names to keep regardless of thresholds, even if empty.
+        treat_blank_as_null: Treat empty and whitespace-only strings as missing.
+        return_report: Pass True to return (clean_df, report_df). The report
+            includes column name, type, row count, populated count/percentage,
+            exact distinct count and selection status. Distinct counts are
+            always computed for the report, including when the threshold is 1.
+            Only threshold 1 without a report skips countDistinct.
+
+    Empty columns are removed unless preserved. Raises ValueError if no
+    columns remain. Original values are retained in the returned DataFrame.
+    No approximate distinct counts are used.
+    """
+    ...
 
 
 def null_rate(
