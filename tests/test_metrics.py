@@ -1,5 +1,6 @@
 import pytest
 from pyspark.sql import Row
+from pyspark.sql import functions as F
 
 from databay import (
     compare_columns_by_key,
@@ -479,3 +480,82 @@ def test_find_key_set_smoke_with_larger_input(spark):
     assert result["matched_count"] == 150
     assert result["missing_count"] == 50
     assert result["coverage_pct"] == 75.0
+
+
+@pytest.mark.parametrize("candidate_columns", [[], ["missing"]])
+def test_find_key_set_returns_empty_report_when_no_columns_are_checked(spark, candidate_columns):
+    result = find_key_set(
+        tables={"customers": spark.createDataFrame([Row(id="A")])},
+        keys_df=spark.createDataFrame([Row(key="A")]),
+        key_column="key",
+        candidate_columns=candidate_columns,
+    )
+
+    assert result.collect() == []
+    assert result.dtypes == [
+        ("table_name", "string"),
+        ("column_name", "string"),
+        ("total_keys", "bigint"),
+        ("matched_count", "bigint"),
+        ("missing_count", "bigint"),
+        ("coverage_pct", "double"),
+    ]
+
+
+@pytest.mark.parametrize("values", [[("other",)], [], [(None,)]])
+def test_find_key_set_reports_zero_coverage_for_unmatched_columns(spark, values):
+    result = find_key_set(
+        tables={"customers": spark.createDataFrame(values, "id string")},
+        keys_df=spark.createDataFrame([Row(key="A"), Row(key="B")]),
+        key_column="key",
+        candidate_columns=["id"],
+    ).collect()
+
+    assert [row.asDict() for row in result] == [{
+        "table_name": "customers",
+        "column_name": "id",
+        "total_keys": 2,
+        "matched_count": 0,
+        "missing_count": 2,
+        "coverage_pct": 0.0,
+    }]
+
+
+def test_find_key_set_respects_disabled_broadcast_and_counts_distinct_keys(spark, monkeypatch, capsys):
+    table = spark.range(100_000).select((F.col("id") % 50_000).alias("code"))
+    keys = spark.createDataFrame([(1,), (1,), (49_999,), (50_000,), (None,)], "key long")
+    joins = []
+    dataframe_class = type(table)
+    original_join = dataframe_class.join
+
+    def record_join(self, *args, **kwargs):
+        joined = original_join(self, *args, **kwargs)
+        joins.append(joined)
+        return joined
+
+    monkeypatch.setattr(dataframe_class, "join", record_join)
+    options = [
+        "spark.sql.autoBroadcastJoinThreshold",
+        "spark.sql.adaptive.autoBroadcastJoinThreshold",
+    ]
+    original_options = {name: spark.conf.get(name) for name in options}
+    try:
+        for name in options:
+            spark.conf.set(name, "-1")
+
+        result = find_key_set({"customers": table}, keys, "key", ["code"]).collect()[0]
+
+        assert result["total_keys"] == 3
+        assert result["matched_count"] == 2
+        assert result["missing_count"] == 1
+        assert result["coverage_pct"] == 66.6667
+        assert joins
+        for joined in joins:
+            joined.explain()
+        assert "Broadcast" not in capsys.readouterr().out
+    finally:
+        for name, value in original_options.items():
+            if value is None:
+                spark.conf.unset(name)
+            else:
+                spark.conf.set(name, value)

@@ -2,7 +2,7 @@ from typing import Dict, List, Literal, Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.functions import broadcast
+from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
 
 def compare_datasets(
@@ -534,6 +534,7 @@ def find_key_set(
         key_column: Column in keys_df that contains key values
         candidate_columns: Optional explicit column list to check in each table.
                           If None, all columns in each table are checked.
+                          Missing columns are skipped; an empty list checks no columns.
 
     Returns:
         DataFrame with one row per checked table/column:
@@ -543,6 +544,10 @@ def find_key_set(
         - matched_count
         - missing_count
         - coverage_pct
+
+        If no candidate columns exist, returns an empty DataFrame with this schema.
+        Existing columns without matches return zero coverage. Spark chooses the
+        join strategy using its configuration and statistics; no broadcast is forced.
     """
     if not tables:
         raise ValueError("tables must be a non-empty dict of table_name -> DataFrame")
@@ -580,7 +585,7 @@ def find_key_set(
             )
 
             matched_count = search_keys_df.join(
-                broadcast(column_values),
+                column_values,
                 on="key_value",
                 how="inner",
             ).count()
@@ -599,14 +604,12 @@ def find_key_set(
                 )
             )
 
-    return spark.createDataFrame(
-        result_rows,
-        [
-            "table_name",
-            "column_name",
-            "total_keys",
-            "matched_count",
-            "missing_count",
-            "coverage_pct",
-        ],
-    )
+    result_schema = StructType([
+        StructField("table_name", StringType(), True),
+        StructField("column_name", StringType(), True),
+        StructField("total_keys", LongType(), True),
+        StructField("matched_count", LongType(), True),
+        StructField("missing_count", LongType(), True),
+        StructField("coverage_pct", DoubleType(), True),
+    ])
+    return spark.createDataFrame(result_rows, result_schema)
