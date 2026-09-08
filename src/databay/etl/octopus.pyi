@@ -123,6 +123,7 @@ class Octopus:
         truncate: bool = False,
         trust_server_certificate: bool = True,
         encrypt: bool = False,
+        num_partitions: int = 4,
     ) -> None:
         """
         Write Spark DataFrame(s) to a JDBC database table.
@@ -136,6 +137,12 @@ class Octopus:
             truncate: For overwrite mode, request table truncation instead of drop/recreate.
             trust_server_certificate: For MSSQL, trust server certificate (default: True).
             encrypt: For MSSQL, use encryption for connection (default: False).
+            num_partitions: Positive integer limiting parallel JDBC write partitions
+                per table (default: 4). Spark coalesces excess partitions; fewer
+                input partitions are not increased. Applies to each table in a
+                dict, written sequentially. This is not a database-wide connection
+                limit across clients. A lower value can reduce database load but
+                increase write duration.
             
         Raises:
             RuntimeError: If SparkSession or engine is not initialized.

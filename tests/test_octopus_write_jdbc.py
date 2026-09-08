@@ -100,6 +100,47 @@ def test_write_jdbc_raises_for_invalid_mode():
         octopus.write_jdbc(data=cast(Any, "dummy_df"), target_table="t", mode="badmode")
 
 
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "4", None])
+def test_write_jdbc_rejects_invalid_num_partitions(value):
+    octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
+    with pytest.raises(ValueError, match="num_partitions must be an integer >= 1"):
+        octopus.write_jdbc(
+            data=cast(Any, "dummy_df"), target_table="t", num_partitions=value
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("source_partitions", "limit", "expected_transactions", "multiple_tables"),
+    [(8, None, 4, False), (8, 2, 2, True), (1, 4, 1, False)],
+)
+def test_write_jdbc_partition_limit(
+    spark_session, source_partitions, limit, expected_transactions, multiple_tables
+):
+    octopus = Octopus(spark=spark_session, engine="postgresql")
+    _set_env_vars(octopus, TEST_PG_CONFIG)
+    df = spark_session.range(0, 24, numPartitions=source_partitions)
+    table = f"octopus_partition_limit_{source_partitions}_{limit}"
+    tables = [table, table + "_second"] if multiple_tables else [table]
+    options = {} if limit is None else {"num_partitions": limit}
+    if multiple_tables:
+        octopus.write_jdbc(
+            {name: df for name in tables}, mode="overwrite", **options
+        )
+    else:
+        octopus.write_jdbc(df, target_table=table, mode="overwrite", **options)
+
+    for name in tables:
+        # PostgreSQL records the inserting transaction in xmin. Spark commits
+        # each nonempty JDBC write partition in its own transaction, so this
+        # checks the actual write partition count, not just an option mock.
+        result = octopus.read_jdbc(queries=[(
+            f"SELECT id, xmin::text AS insert_transaction FROM {name}", "written"
+        )])["written"].collect()
+        assert sorted(row["id"] for row in result) == list(range(24))
+        assert len({row["insert_transaction"] for row in result}) == expected_transactions
+
+
 def test_write_jdbc_raises_when_single_dataframe_missing_target_table():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
     _set_env_vars(octopus, TEST_PG_CONFIG)
