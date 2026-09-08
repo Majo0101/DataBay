@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databay"
-version = "0.3.0"
+version = "0.3.1"
 description = "Data quality and comparison tooling for lakehouse datasets"
 authors = [
     {name = "Marian Bodnar", email = "bodnar.marian@gmail.com"}
 ]
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
     "pyspark[connect]==4.0.1",

@@ -25,7 +25,16 @@ def compare_datasets(
         name_b: Display name for second dataset (default: "Dataset B")
     
     Returns:
-        DataFrame with metrics: row counts, differences, match percentages, Jaccard similarity
+        DataFrame with metric, scope, count_value and percent_value columns.
+        Metrics include row counts, differences, match percentages and Jaccard similarity.
+
+    Notes:
+        Comparison uses all selected values and preserves duplicate multiplicity
+        (exceptAll), rather than comparing unique sets or aligning by a key.
+        Selected columns must exist in both inputs with compatible types.
+
+    Example:
+        >>> compare_datasets(source, target, ["id", "amount"]).show()
     """
     
     # Expand "*" to actual column list from df_a to ensure consistent column order
@@ -109,6 +118,15 @@ def compare_columns_by_key(
         - value != NULL → NON-MATCH
         - value == value → MATCH
         - value != different_value → NON-MATCH
+
+    Notes:
+        NULL handling above applies to compared values. NULL join keys do not
+        match. Unmatched outer-join rows are differences even when compared values
+        are NULL. Duplicate keys can multiply joined rows; check key uniqueness
+        first when expecting one-to-one alignment.
+
+    Example:
+        >>> compare_columns_by_key(source, target, ["id"], ["amount"], join_type="full").show()
     """
     
     if not key_cols or any((not isinstance(c, str) or not c) for c in key_cols):
@@ -316,7 +334,7 @@ def numeric_diff_check(
         show_summary_only: If True, returns only summary statistics per column. 
                           If False, returns detailed differences (default: False)
         diff_type: Type of difference to calculate:
-                  - "absolute": Absolute difference (a - b)
+                  - "absolute": Absolute difference abs(a - b)
                   - "percentage": Percentage difference ((a - b) / b * 100)
                   - "both": Both absolute and percentage
     
@@ -346,8 +364,19 @@ def numeric_diff_check(
         - Calculates absolute and/or percentage differences
         - Provides both summary statistics and detailed differences
         - Identifies which records differ and by how much
-        - Handles null values gracefully
-        - Optimized for performance with single-pass aggregations
+        - Summary statistics are aggregated together
+
+    Notes:
+        Uses an inner join: unmatched keys are omitted, NULL keys do not join,
+        and duplicate keys can multiply compared rows. Values with a NULL operand
+        count neither as matching nor differing; use null_rate for missingness.
+        Tolerance applies to absolute differences, including percentage mode.
+        Percentage difference is signed and NULL when the value in B is zero.
+        Details always include absolute differences; diff_type controls the extra
+        percentage column. Summary output is the same for every diff_type.
+
+    Example:
+        >>> numeric_diff_check(source, target, ["id"], ["amount"], tolerance=0.01).show()
     """
     if diff_type not in ["absolute", "percentage", "both"]:
         raise ValueError("diff_type must be one of: 'absolute', 'percentage', 'both'")
@@ -550,6 +579,14 @@ def find_key_set(
         If no candidate columns exist, returns an empty DataFrame with this schema.
         Existing columns without matches return zero coverage. Spark chooses the
         join strategy using its configuration and statistics; no broadcast is forced.
+
+    Notes:
+        Both search keys and candidate values are cast to strings and deduplicated;
+        NULL values are excluded. Coverage measures distinct search keys, not rows.
+        Raises ValueError for an empty tables mapping or no non-null search keys.
+
+    Example:
+        >>> find_key_set({"orders": orders}, customers, "id", ["customer_id"]).show()
     """
     if not tables:
         raise ValueError("tables must be a non-empty dict of table_name -> DataFrame")

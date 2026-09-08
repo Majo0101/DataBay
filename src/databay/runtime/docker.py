@@ -11,6 +11,29 @@ from .spark import spark_connect, sparksql_magic
 
 @dataclass
 class DockConfig:
+    """Configuration used when creating a Spark container.
+
+    Attributes:
+        image: Local Docker image; default "spark-delta-pg".
+        name: Container name used for lookup/reuse; default "spark-delta-pg".
+        ports: Container-to-host mappings; defaults to 4040/tcp and 15002/tcp.
+        named_volumes: Volume-to-container-path mappings. Defaults:
+            spark-lakehouse -> /lakehouse, spark-metastore -> /metastore/pgdata.
+        bind_mounts: Host-to-container paths; default empty. Mounts are read/write.
+        env: Container environment; default empty. For project images, set
+            SPARK_MEMORY (Java heap GiB) and SPARK_CORES (local worker threads).
+        network: Docker network name, or None for Docker's default.
+        restart_policy: Defaults to {"Name": "unless-stopped"}.
+        wsl_uid: Optional Linux process UID; image must support running as this user.
+        wsl_gid: Optional GID; used only when wsl_uid is set.
+
+    Existing containers are reused by name; changed settings are not applied
+    automatically. Match names and volume mappings to your Compose configuration
+    when reusing its container.
+
+    Example:
+        >>> cfg = DockConfig(image="spark-pg-delta", name="spark-pg-delta")
+    """
     image: str = "spark-delta-pg"
     name: str = "spark-delta-pg"
 
@@ -33,7 +56,16 @@ class DockConfig:
 def dock(cfg: DockConfig) -> str:
     """
     Start (or reuse) your Spark container using Docker.
-    Returns container id.
+    Args:
+        cfg: Container image, name, mounts, environment and port mappings.
+
+    Returns:
+        Container id. A stopped existing container is started; a running one reused.
+
+    Notes:
+        Does not wait for Spark readiness or reconcile existing settings with cfg.
+        Named volumes are created if absent. Changing cfg.env, ports or mounts
+        requires recreating the container separately.
     """
     client = docker.from_env()
 
@@ -104,7 +136,12 @@ def dock_spark_init(
         check_interval: Seconds between connection attempts (default: 0.2)
     
     Returns:
-        SparkSession connected and ready with cell magics registered
+        SparkSession connected with %%sparksql registered.
+
+    Notes:
+        Run in an active IPython/Jupyter session. Stops an existing active Spark
+        session before connecting. Uses dock() reuse semantics; it does not apply
+        new settings to an existing container or register %%ts / %%skip.
     """
     # Step 1: Start container
     container_id = dock(cfg)
@@ -148,6 +185,10 @@ def dock_shutdown(cfg: DockConfig, remove: bool = False) -> None:
     
     Returns:
         None. Silently returns if container doesn't exist.
+
+    Notes:
+        Named volumes and bind-mounted files are retained. remove=True removes
+        the container; API errors during removal are suppressed.
     """
     client = docker.from_env()
 

@@ -3,10 +3,13 @@
 **Data quality and comparison tooling for lakehouse datasets**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PySpark](https://img.shields.io/badge/PySpark-4.0+-orange.svg)](https://spark.apache.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![PySpark](https://img.shields.io/badge/PySpark-4.0.1-orange.svg)](https://spark.apache.org/)
+[![License](https://img.shields.io/badge/license-Author_permission_required-lightgrey.svg)](LICENSE)
 
-DataBay is a Python library designed for data engineers working with Apache Spark and lakehouse architectures. It provides a comprehensive suite of tools for data quality analysis, dataset comparison, ETL operations, and Spark runtime management.
+DataBay is a Python library designed for data engineers working with Apache Spark and lakehouse architectures. It brings profiling, dataset comparison, JDBC operations, and Spark runtime management into a local workflow for analytics and reverse engineering.
+
+See the [API usage guide](docs/api-guide.md) for choosing profiling functions,
+interpreting results, JDBC options and bounded Pandas conversion.
 
 ## Architecture
 
@@ -16,61 +19,71 @@ flowchart LR
     User --> ETL[DataBay Octopus<br/>JDBC and CSV ETL]
     User --> Runtime[DataBay Runtime<br/>Docker and Spark Connect]
 
-    Core --> Spark[Apache Spark]
-    ETL --> Spark
-    Runtime --> Spark
+    Core --> Connect[Spark Connect]
+    ETL --> Connect
+    Runtime --> Connect
+    Connect --> Spark[Apache Spark · local N threads]
+    Runtime -. manages .-> Docker
 
     Spark <--> Lakehouse[Delta Lake / Iceberg]
     Spark <--> JDBC[(PostgreSQL / MSSQL / Oracle)]
     Docker[Docker environments] -. hosts .-> Spark
-    Docker -. provides .-> Lakehouse
+    Spark --> Catalog[Internal PostgreSQL catalog]
+    Docker -. hosts .-> Catalog
 ```
 
-DataBay runs from Python or Jupyter, delegates distributed processing to Spark, and connects Spark to lakehouse storage, mounted CSV data, and JDBC databases. The included Docker environments provide reproducible Delta Lake and Iceberg runtimes for local development and integration testing.
+DataBay runs in Python or Jupyter and sends work through Spark Connect to a local Docker runtime. Choose Delta Lake or Iceberg; Spark accesses lakehouse files, mounted CSV data and JDBC databases. Internal PostgreSQL stores catalog metadata. The separate `psg-db` is an optional, disposable database for query experiments and JDBC tests.
 
 ## Why I Built This
 
-I built DataBay because much of my work sits between data engineering, data science, and reverse engineering unfamiliar data systems. I regularly need to inspect new datasets, discover relationships and candidate keys, compare environments, validate assumptions, and test ETL behavior before committing a solution to a larger platform.
+I built DataBay for work that sits between data engineering, analytics, and reverse engineering unfamiliar systems: inspect datasets, discover keys and relationships, compare environments, and test ETL assumptions.
 
-Doing that work directly in a shared cloud environment can make the feedback loop slower and more expensive than it needs to be. DataBay gives me a fast, reproducible Spark and lakehouse workspace on my own machine, together with reusable tools for profiling, reconciliation, quality checks, JDBC movement, and integration testing.
-
-My typical workflow is to develop and validate a representative small-scale solution locally, then transfer the proven approach to Microsoft Fabric or Databricks for production-scale execution. DataBay is the bridge between those stages: small enough for rapid experimentation, but built around the same Spark, SQL, Delta Lake, Iceberg, and JDBC concepts used in larger data platforms.
-
+It gives me a reproducible Spark workspace on my own machine. I can develop and validate an approach locally, then adapt it to Microsoft Fabric or Databricks for larger workloads.
 
 ## Installation
 
+After obtaining the author's permission, clone the repository and install it in your Python environment:
+
 ```bash
-pip install -e .
+git clone https://github.com/Majo0101/DataBay.git
+cd DataBay
+python -m pip install -e .
 ```
 
 ### Requirements
-- Python 3.10+
-- Apache Spark 4.0+ (via PySpark)
-- Docker (for container runtime features)
+
+- Python 3.10+; a virtual environment is recommended.
+- PySpark 4.0.1 and Spark Connect dependencies are installed with DataBay.
+- Docker Desktop with Linux containers for the Spark runtime.
+- Jupyter/IPython for notebook magic. If needed, install with `python -m pip install jupyterlab` and run `jupyter lab` from the same environment.
 
 ## Local Testing
 
-DataBay keeps lightweight tests separate from tests that require Docker, Spark, Delta Lake, or PostgreSQL. The repository includes a PowerShell runner for the `databay-0.3-test` Conda environment:
+Activate the Conda environment where DataBay is installed, then run from the repository root:
 
-```powershell
-# Unit tests and mocked runtime tests
-powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1 fast
-
-# Spark, Delta Lake, CSV, and JDBC tests (excluding the largest workload)
-powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1 integration
-
-# Long-running integration tests, including the 10-million-row JDBC write
-powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1 slow
-
-# Complete suite
-powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1 all
+```bash
+conda activate YOUR_ENV
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
-The integration modes expect the `spark-pg-delta` and `psg-db` containers described under `infra/` to be running. The CSV integration test uses the repository-owned fixture in `data/landing`.
+The full suite requires the `spark-pg-delta` and `psg-db` test containers and includes large JDBC writes.
+For fast tests without containers, use `python -m pytest -m "not integration"`.
+Test runtime setup: [Delta](infra/delta_jdbc/README.md) and [PostgreSQL](infra/psg_db/README.md).
+The Iceberg test starts its own temporary container; build its image first with
+`docker build -t spark-pg-iceberg infra/iceberg_jdbc`.
 
 ## Quick Start
 
 ### 1. Initialize Spark with Docker
+
+Build the image once from the repository root:
+
+```bash
+docker build -t spark-delta-pg infra/delta_jdbc
+```
+
+Then run in your notebook. Adjust the heap and worker threads for your laptop:
 
 ```python
 from databay.runtime.docker import DockConfig, dock_spark_init
@@ -79,16 +92,27 @@ from databay.runtime.docker import DockConfig, dock_spark_init
 config = DockConfig(
     image="spark-delta-pg",
     name="databay-spark",
-    ports={"4040/tcp": 4040, "15002/tcp": 15002},
+    ports={
+        "4040/tcp": 4040,
+        "15002/tcp": 15002,
+    },
     named_volumes={
         "spark-lakehouse": "/lakehouse",
-        "spark-metastore": "/metastore/pgdata"
-    }
+        "spark-metastore": "/metastore/pgdata",
+    },
+    env={
+        "SPARK_MEMORY": "8",
+        "SPARK_CORES": "4",
+    },
 )
 
-# Start container and get SparkSession
+# Start container, connect and register SQL magic
 spark = dock_spark_init(config)
 ```
+
+Spark UI: [localhost:4040](http://localhost:4040). Keep the default ports free of
+other Spark containers. On first startup, if the server is still warming up,
+rerun initialization or pass `connect_timeout=60`.
 
 ### 2. Data Quality Analysis
 
@@ -100,11 +124,20 @@ from databay import (
     select_informative_columns,
 )
 
-# Check null rates across columns
-null_analysis = null_rate(df, threshold=5.0)  # Only show columns with >5% nulls
-null_analysis.show()
+df = spark.createDataFrame(
+    [
+        (1, "Ana", "SK"),
+        (2, "Peter", "SK"),
+        (2, None, "SK"),
+    ],
+    "customer_id long, name string, country string",
+)
+df.createOrReplaceTempView("customers")
 
-# Remove empty, sparse, or constant columns and inspect each decision
+# Show columns with at least 5% NULLs
+null_rate(df, threshold=5.0).show()
+
+# Keep fields with changing values and inspect each decision
 clean_df, column_report = select_informative_columns(
     df,
     min_distinct_values=2,
@@ -113,19 +146,26 @@ clean_df, column_report = select_informative_columns(
 )
 column_report.show()
 
-# Find duplicate records
-duplicates = duplicate_check(df, subset=["id", "customer_name"])
-duplicates.show()
+# Find repeated keys
+duplicate_check(df, cols=["customer_id"]).show()
 
-# Compare two datasets
+# Compare a second dataset
+df_test = spark.createDataFrame(
+    [
+        (1, "Anna", "SK"),
+        (2, "Peter", "SK"),
+    ],
+    df.schema,
+)
 comparison = compare_datasets(
-    df_prod, df_test,
-    cols=["id", "name", "value"],
-    name_a="Production",
-    name_b="Test"
+    df_a=df,
+    df_b=df_test,
+    cols=["customer_id", "name", "country"],
 )
 comparison.show()
 ```
+
+For your own CSV, add a host-to-container mapping to `config.bind_mounts` before creating the container, then read the container path with `spark.read.csv(...)`.
 
 ### 3. Column-by-Column Comparison
 
@@ -134,10 +174,10 @@ from databay import compare_columns_by_key
 
 # Detailed comparison by key
 diff_analysis = compare_columns_by_key(
-    df_a=prod_data,
-    df_b=test_data,
+    df_a=df,
+    df_b=df_test,
     key_cols=["customer_id"],
-    compare_cols=["name", "email", "balance"],
+    compare_cols=["name", "country"],
     show_summary_only=False
 )
 diff_analysis.show()
@@ -145,50 +185,83 @@ diff_analysis.show()
 
 ### 4. ETL Operations with Octopus
 
+With the optional test PostgreSQL running and `.env` configured below:
+
 ```python
 from databay.etl import Octopus
 
-# Initialize with database credentials
-octopus = Octopus(env_file=".env", spark=spark, engine="postgresql")
+octopus = Octopus(
+    env_file=".env",
+    spark=spark,
+    engine="postgresql",
+)
 
-# Extract data from database
+# Write to the test database; cap parallelism for this table write
+octopus.write_jdbc(
+    data=df,
+    target_table="customers_demo",
+    mode="overwrite",
+    num_partitions=2,
+)
+
+# Read back as a lazy Spark DataFrame
 queries = [
-    ("SELECT * FROM customers", "customers"),
-    ("SELECT * FROM orders", "orders")
+    ("SELECT * FROM customers_demo", "customers"),
 ]
+
+frames = octopus.read_jdbc(queries=queries)
+frames["customers"].show()
+```
+
+To load JDBC results into lakehouse tables, choose the server's format:
+
+```python
+# Delta runtime (default format)
 octopus.feed_spark(
     queries=queries,
     target_schema="analytics",
-    batch_size=10000,
-    num_partitions=4
 )
 
-# Now query in Spark
-spark.sql("SELECT * FROM analytics.customers").show()
+# Alternatively, with an Octopus instance connected to the Iceberg runtime
+octopus.feed_spark(
+    queries=queries,
+    target_schema="lake.analytics",
+    table_format="iceberg",
+)
 ```
+
+Both replace destination data. Iceberg also replaces the table schema. The server
+must already support the selected format and catalog; this is not a format conversion.
 
 ### 5. Jupyter Magic Commands
 
-```python
-# Register magics (done automatically by dock_spark_init)
-from databay.runtime.spark import sparksql_magic
-sparksql_magic(spark)
-```
+Magics were registered in step 1. Run each example in its own notebook cell:
 
 ```sql
 %%sparksql
-SELECT customer_id, COUNT(*) as order_count
-FROM analytics.orders
-GROUP BY customer_id
-ORDER BY order_count DESC
-LIMIT 10
+SELECT
+    country,
+    COUNT(*) AS rows
+FROM customers
+GROUP BY country
 ```
 
-```python
-# Save query results to variable
-%%sparksql top_customers
-SELECT * FROM analytics.customers WHERE tier = 'platinum'
+```sql
+%%sparksql customers_df
+SELECT *
+FROM customers
+WHERE name IS NOT NULL
 ```
+
+```sql
+%%sparksql pandas customers_pd --limit 5000
+SELECT *
+FROM customers
+ORDER BY customer_id, name
+```
+
+These display Spark results, assign a Spark DataFrame, and display/assign a Pandas
+DataFrame respectively. Use `%%sparksql view view_name` to register a temporary view.
 
 ## Module Overview
 
@@ -199,19 +272,22 @@ SELECT * FROM analytics.customers WHERE tier = 'platinum'
 - `compare_columns_by_key()` - Key-based column comparison
 - `compare_schema()` - Schema structure comparison
 - `numeric_diff_check()` - Numeric value deviation analysis
+- `find_key_set()` - Locate known key values across tables and columns
 
 #### **quality.py**
 - `select_informative_columns()` - Remove empty, sparse, or constant columns with an optional decision report
 - `null_rate()` - Missing value statistics
 - `pk_uniqueness_check()` - Primary key validation
 - `duplicate_check()` - Duplicate record detection
+- `regex_check()` / `row_level_rules()` - Format and SQL rule validation
+- `cardinality_check()` / `cardinality_check_tables()` - Relationship profiling
 
 ### `databay.etl`
 
 #### **octopus.py**
 - `Octopus` class - Multi-database ETL orchestrator
   - `.read_jdbc()` - Read JDBC results into DataFrames
-  - `.feed_spark()` - Load to Spark Delta tables
+  - `.feed_spark()` - Load to Delta or Iceberg tables
   - `.write_jdbc()` - Write DataFrames to JDBC tables
   - `.load_csv()` - Import CSV from volumes
 
@@ -230,142 +306,63 @@ SELECT * FROM analytics.customers WHERE tier = 'platinum'
 
 ## Design Decisions and Limitations
 
-DataBay is designed for fast investigation, reconciliation, and validation with Spark. It uses distributed Spark operations for dataset work and only collects compact aggregate results when building summaries. The following behavior is intentional and should be considered when applying it to large or unfamiliar datasets.
+- Local capacity depends on your laptop. Start with representative data and summary outputs.
+- Some checks scan sources more than once; cache ownership stays with the caller.
+- Duplicate join keys can multiply comparison rows. Validate candidate keys first.
+- `min_distinct_values=1` keeps constants; use `2` for varying fields. Numeric comparisons do not classify NULL operands as matching or differing.
+- Pandas defaults to 10000 rows and warns on truncation. Row limits do not cap RAM; without `ORDER BY`, the selected rows are not guaranteed.
+- JDBC write partitions default to 4 per table. Parallel reads are opt-in; their bounds divide work, not filter rows.
+- The separate PostgreSQL test container uses disposable storage and relaxed durability.
 
-### Spark actions and repeated scans
-
-Spark DataFrames are lazy, but several DataBay functions must trigger actions to calculate their results. For example, `compare_datasets()` performs row counts and `exceptAll()` counts, while summary comparison functions aggregate and collect a small result row to the Python process.
-
-These operations can scan the same source more than once. When several checks reuse an expensive DataFrame, consider persisting it before analysis and unpersisting it afterwards:
-
-```python
-df.cache()
-df.count()  # Materialize the cache
-
-# Run multiple DataBay checks here
-
-df.unpersist()
-```
-
-Caching is not enabled automatically because storage capacity, reuse patterns, and eviction policy belong to the calling Spark application.
-
-### Scalability and result size
-
-Summary modes are intended to return small diagnostic DataFrames. Detailed modes can return one row for every difference, duplicate, failed rule, or cardinality violation, so their output may approach the size of the input data. Comparing many columns also creates larger Spark expressions, and full-dataset comparisons may require wide shuffles.
-
-Use representative samples or summary modes during local investigation. For production-scale datasets, run the same checks on an appropriately sized Microsoft Fabric, Databricks, or Spark environment. Apply `top_n`, select only relevant columns, and filter inputs early where the API supports it.
-
-### Join behavior and key assumptions
-
-Key-based comparisons use the key columns supplied by the caller. DataBay validates that these columns exist, but it does not assume or enforce that they are unique. Duplicate keys on both sides can produce a many-to-many expansion and may overstate the number of compared rows.
-
-- `inner` joins compare only keys present in both datasets.
-- `left` and `right` joins retain unmatched keys from one selected side.
-- `full` and `full_outer` joins retain keys from both sides and treat a missing row as a mismatch.
-- Join keys should have compatible data types and reasonably balanced value distributions.
-- Large, skewed, or high-cardinality joins may cause expensive shuffles and uneven Spark tasks.
-
-Run `pk_uniqueness_check()` or `duplicate_check()` first when key uniqueness is part of the comparison assumption.
-
-### Column names
-
-Core quality and comparison functions treat column-name arguments as literal
-top-level names. Pass `"customer.id"` directly for a column with that exact name;
-DataBay handles dots, spaces, and embedded backticks without renaming the column.
-The existing `['*']` shorthand still selects all columns where documented.
-
-SQL expressions passed to `row_level_rules()` keep Spark SQL syntax: use
-`` `customer.id` `` for the literal column, or `customer.id` for field `id` inside
-the `customer` struct. To use a nested field with a column-name API, first project
-it to a top-level column. Spark's configured case-sensitivity rules still apply.
-
-### Null semantics
-
-Column comparison deliberately uses data-quality semantics rather than Spark SQL's normal three-valued equality behavior:
-
-- null compared with null is a match;
-- null compared with a non-null value is a mismatch;
-- a row missing from one side of an outer join is a mismatch.
-
-Null-rate and rule functions report nulls explicitly. Numeric difference calculations use arithmetic expressions, so null numeric values do not produce a meaningful absolute or percentage difference and should be profiled or normalized separately before numeric comparison. Percentage differences are also undefined when the comparison-side value is zero and are returned as null.
-
-### JDBC reads and partitioning
-
-`Octopus` performs a single JDBC read by default. Parallel reads are opt-in and require `partition_column`, `lower_bound`, `upper_bound`, and `num_partitions`.
-
-Spark uses the bounds to calculate partition strides; the bounds are not a row filter. The partition column should be numeric or date-like, indexed where practical, and distributed evenly enough to avoid skew. Too many partitions create additional concurrent database connections and can overload the source system, while poor bounds can create empty or unbalanced partitions.
-
-Choose partition settings from source statistics and database capacity rather than Spark capacity alone. Validate them on a small workload before using them against a production database.
-
-### JDBC read type overrides
-
-`Octopus.read_jdbc()` and `Octopus.feed_spark()` accept a full or partial
-`StructType` through `schema`. DataBay passes these type overrides to JDBC's
-`customSchema` option. For example, `StructType([StructField("id", StringType())])`
-reads `id` as text and leaves other columns at their JDBC-inferred types, even
-when `infer_schema=False`. Import these types from `pyspark.sql.types`.
-
-Field names must exactly match the query result column names; missing or duplicate
-names raise `ValueError`. This controls read types, not column order, projection,
-nullability, or field metadata. Conversions depend on the JDBC driver and source
-values, so incompatible conversions can still fail. No source database schema is
-modified. `feed_spark()` writes tables sequentially; a failure does not roll back
-tables written earlier in the same call.
+See the [API guide](docs/api-guide.md) and function help in Pylance for details.
 
 ## Configuration
 
 ### Docker Container Setup
 
-DataBay uses Docker to manage Spark containers. The `DockConfig` dataclass provides flexible configuration:
+For the Python workflow above, set resources in `DockConfig.env`:
 
 ```python
-from databay.runtime.docker import DockConfig
-
-config = DockConfig(
-    image="spark-delta-pg",           # Docker image name
-    name="my-spark",                  # Container name
-    ports={
-        "4040/tcp": 4040,             # Spark UI
-        "15002/tcp": 15002            # Spark Connect
-    },
-    named_volumes={
-        "spark-data": "/data"         # Persistent data
-    },
-    bind_mounts={
-        r"C:\data": "/host/data"      # Mount local directories
-    },
-    env={
-        "SPARK_MODE": "master"        # Environment variables
-    },
-    network="spark-net",               # Docker network
-    restart_policy={
-        "Name": "unless-stopped"      # Auto-restart policy
-    }
-)
+env={
+    "SPARK_MEMORY": "8",  # Driver Java heap in GiB; allow extra RAM for overhead
+    "SPARK_CORES": "4",   # Worker threads, not a hard container CPU limit
+}
 ```
+
+`DockConfig` also supports port mappings, named volumes and bind mounts.
+An existing container is reused by name; changing configuration requires
+recreating it. Named volumes retain the lakehouse data.
+
+If you use Compose instead, edit its environment settings and apply them with
+`docker compose up -d` from the runtime directory. Use
+`docker compose up -d --build` after editing the Dockerfile or startup script.
+
+See [Delta configuration](infra/delta_jdbc/README.md) or
+[Iceberg configuration](infra/iceberg_jdbc/README.md) for optional tuning overrides.
 
 ### Database Credentials (.env)
 
-For Octopus ETL operations, store credentials in a `.env` file:
+Example for the optional PostgreSQL test container:
 
 ```env
-# PostgreSQL
-USER=myuser
-PASSWORD=mypassword
-HOST=localhost
+HOST=host.docker.internal
 PORT=5432
-DATABASE=analytics
-
-# MSSQL with interactive auth
-USER=user@domain.com
-TENANT_ID=your-tenant-id
+DATABASE=testdb
+USER=test_user
+PASSWORD=test_pass
 ```
 
-
+The database host must be reachable from Spark inside Docker.
+`host.docker.internal` targets your host on Docker Desktop.
+Use your database's credentials for other JDBC sources.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+DataBay is the work of **Marian Bodnar**. All rights to the original DataBay code
+and documentation are reserved. Use requires prior written permission from the
+author; contact [bodnar.marian@gmail.com](mailto:bodnar.marian@gmail.com).
+
+Third-party technologies retain their own copyrights and licenses. See [LICENSE](LICENSE) for the full terms.
 
 ## Author
 

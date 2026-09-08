@@ -1,21 +1,27 @@
-MIT License
+DataBay — Author Permission Required
 
-Copyright (c) 2026 Marian Bodnar
+Copyright (c) 2026 Marian Bodnar. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+These terms cover the original DataBay source code and documentation.
+No general license to use, copy, modify, redistribute, sublicense or sell this
+material is granted. Such activities require prior written permission from
+Marian Bodnar, except as permitted by applicable law, applicable hosting-platform
+terms or a separate valid license. Any permission is limited to the scope and
+conditions agreed in writing.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permission requests: bodnar.marian@gmail.com
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Third-party components, dependencies and technologies remain the property of
+their respective rights holders and are governed by their own licenses. These
+terms do not replace or restrict rights granted by those licenses.
+
+These terms apply to versions distributed with this notice. They do not revoke
+permissions already granted for copies previously distributed under the MIT
+License or another valid license. Those copies remain subject to their original
+license terms.
+
+To the extent permitted by applicable law, this software is provided without
+warranties, including warranties of merchantability, fitness for a particular
+purpose or non-infringement. The author accepts no liability for claims or losses
+arising from its use, except where liability cannot lawfully be excluded or a
+separate written agreement provides otherwise.

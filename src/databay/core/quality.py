@@ -188,10 +188,19 @@ def null_rate(
         - data_type: Column data type
     
     Features:
-        - Single-pass aggregation for efficiency
+        - Counts rows separately, then aggregates NULL counts across all columns
         - Shows data types to identify potential type-related null issues
         - Optional threshold filtering to focus on problematic columns
         - Sorted by null percentage to highlight worst columns first
+
+    Notes:
+        Only SQL NULL counts as missing; blank strings and NaN are not NULL.
+        The threshold is inclusive and applied to the rounded percentage.
+        If no column reaches it, the report is empty with the same schema.
+        Empty input has zero counts and zero percentages.
+
+    Example:
+        >>> null_rate(df, threshold=5.0).show()
     """
     
     total_count = df.count()
@@ -288,6 +297,11 @@ def duplicate_check(
     Notes:
         - NULL values ARE grouped together (NULL == NULL in PySpark groupBy)
         - When check_nulls=True, reports NULL counts to help identify data quality issues
+        - rows_in_duplicate_groups includes every row in repeated groups, not
+          just extra copies. top_n limits detail output only; 0 returns no details.
+
+    Example:
+        >>> duplicate_check(df, cols=["customer_id"], show_summary_only=True).show()
     """
     
     if top_n < 0:
@@ -394,7 +408,7 @@ def pk_uniqueness_check(df: DataFrame, pk_cols: List[str]) -> DataFrame:
         - null_in_[column]: NULL count per PK column
     
     Notes:
-        - This is a wrapper around duplicate_check() optimized for PK validation
+        - This is a wrapper around duplicate_check() configured for PK validation
         - A valid primary key should have:
           * rows_in_duplicate_groups = 0 (no duplicates)
           * total_null_values = 0 (no NULLs)
@@ -445,6 +459,14 @@ def regex_check(
             - pattern
             - non_matching_value
             - non_matching_count
+
+    Notes:
+        Values are cast to strings; NULL fails validation. Patterns use Spark
+        rlike semantics: use ^ and $ for a whole-value check. Detail output groups
+        invalid values by frequency and represents NULL as "<NULL>".
+
+    Example:
+        >>> regex_check(df, {"postcode": "^[0-9]{5}$"}).show()
     """
     if not rules:
         raise ValueError("rules must be a non-empty dict of column_name -> regex pattern")
@@ -560,6 +582,14 @@ def row_level_rules(
             - pattern (rule_expression)
             - non_matching_value (JSON representation of row)
             - non_matching_count
+
+    Notes:
+        Only TRUE passes; FALSE and NULL fail. Expressions are Spark SQL, not
+        Python. Quote literal column names containing dots with backticks inside
+        expressions. top_n limits grouped failing representations per rule.
+
+    Example:
+        >>> row_level_rules(df, {"valid_id": "`customer.id` IS NOT NULL"}).show()
     """
     if not rules:
         raise ValueError("rules must be a non-empty dict of rule_name -> expression")
@@ -655,7 +685,7 @@ def cardinality_check(
     top_n: int = 10,
 ) -> DataFrame:
     """
-    Profile cardinality relationship between two columns.
+    Profile cardinality relationship between two columns or composite keys.
 
     Args:
         df: DataFrame to analyze
@@ -665,7 +695,7 @@ def cardinality_check(
                           If False, returns top violating values (default: True)
         summary_view: Summary output mode when show_summary_only=True:
                       - "full": all metrics
-                      - "short": total rows, non-null pairs, cardinality only
+                      - "short": total rows, non-null pairs, distinct pairs, cardinality
         top_n: Number of top violating values to return in detailed mode (default: 10)
 
     Returns:
@@ -688,6 +718,15 @@ def cardinality_check(
             - [right key columns] (right side columns may get "_right" suffix on name clash)
             - rows_in_left
             - rows_in_right
+
+    Notes:
+        Rows with NULL in any key component are excluded from relationship
+        metrics. Repeated copies of the same pair do not increase the number of
+        distinct partners. In details, rows_in_left/right count distinct partners,
+        not source rows; key values are returned as strings.
+
+    Example:
+        >>> cardinality_check(df, "customer_id", "order_id").show()
     """
     def _normalize_cols(cols: Union[str, List[str]], label: str) -> List[str]:
         if isinstance(cols, str):
@@ -870,6 +909,17 @@ def cardinality_check_tables(
             - [cols_a] (key columns from df_a naming)
             - rows_in_<name_a>
             - rows_in_<name_b>
+
+    Notes:
+        Composite keys are paired by list position and must have equal lengths.
+        NULL-containing keys are excluded. Relationship classification uses only
+        keys present in both tables and their row multiplicities. EMPTY means no
+        shared non-null keys. Coverage percentages use distinct non-null keys.
+        Detail keys are strings. Labels are lowercased and non-alphanumeric
+        characters replaced by underscores; choose distinct normalized labels.
+
+    Example:
+        >>> cardinality_check_tables(orders, customers, "customer_id", "id").show()
     """
     def _normalize_cols(cols: Union[str, List[str]], label: str) -> List[str]:
         if isinstance(cols, str):
