@@ -12,7 +12,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pyspark",
+    "pyspark[connect]==4.0.1",
     "pandas",
     "docker",
     "python-dotenv",
