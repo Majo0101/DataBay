@@ -342,6 +342,10 @@ DataFrame respectively. Use `%%sparksql view view_name` to register a temporary 
 - Pandas defaults to 10000 rows and warns on truncation. Row limits do not cap RAM; without `ORDER BY`, the selected rows are not guaranteed.
 - JDBC write partitions default to 4 per table. Parallel reads are opt-in; their bounds divide work, not filter rows.
 - The separate PostgreSQL test container uses disposable storage and relaxed durability.
+- Spark Connect reattachable execution is disabled by default because PySpark
+  4.0.1 can deadlock after many short actions. Pass
+  `reattachable_execute=True` to `spark_connect()` when stream recovery is
+  required and the client version does not exhibit this issue.
 
 See the [API guide](docs/api-guide.md) and function help in Pylance for details.
 

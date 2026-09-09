@@ -185,9 +185,10 @@ def test_dock_spark_init_orchestrates_steps(monkeypatch):
             "app_name": "pytest-app",
             "host": "127.0.0.1",
             "port": 15003,
-            "timeout": 9,
-            "check_interval": 0.3,
-        }
+                "timeout": 9,
+                "check_interval": 0.3,
+                "reattachable_execute": False,
+            }
     ]
     assert calls["magic"] == [spark_obj]
 

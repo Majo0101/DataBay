@@ -39,6 +39,7 @@ def spark_connect(
     port: int = 15002,
     timeout: int = 8,
     check_interval: float = 0.2,
+    reattachable_execute: bool = False,
     ):
     """
     Connect to a Spark cluster via Spark Connect protocol.
@@ -50,6 +51,10 @@ def spark_connect(
         port: Port number for Spark Connect (default: 15002)
         timeout: Maximum time in seconds to wait for connection (default: 8)
         check_interval: Time in seconds between connection attempts (default: 0.2)
+        reattachable_execute: Enable Spark Connect execution reattachment.
+            Disabled by default to avoid PySpark 4.0.1 client deadlocks during
+            workloads with many short actions. Enable it for remote connections
+            where recovering an interrupted result stream is more important.
     
     Returns:
         SparkSession connected to the remote Spark cluster
@@ -72,6 +77,9 @@ def spark_connect(
         .remote(f"sc://{host}:{port}")
         .getOrCreate()
     )
+
+    if not reattachable_execute:
+        spark.client.disable_reattachable_execute()
 
     return spark
 

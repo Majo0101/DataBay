@@ -65,6 +65,7 @@ def dock_spark_init(
     container_delay: float = 3.0,
     connect_timeout: int = 8,
     check_interval: float = 0.2,
+    reattachable_execute: bool = False,
 ) -> SparkSession:
     """Complete initialization: start container, wait, connect to Spark, and register cell magics.
 
@@ -76,6 +77,7 @@ def dock_spark_init(
         container_delay: Seconds to wait after starting container (default: 3.0)
         connect_timeout: Max seconds to wait for Spark connection (default: 8)
         check_interval: Seconds between connection attempts (default: 0.2)
+        reattachable_execute: Enable Spark Connect execution reattachment.
 
     Returns:
         SparkSession connected with %%sparksql registered.

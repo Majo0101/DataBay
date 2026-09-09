@@ -42,6 +42,7 @@ def test_spark_connect_waits_for_open_port_and_builds_session(monkeypatch):
         "app_name": None,
         "remote": None,
         "created": 0,
+        "reattachable_disabled": 0,
     }
 
     def _fake_is_port_open(host, port):
@@ -61,9 +62,15 @@ def test_spark_connect_waits_for_open_port_and_builds_session(monkeypatch):
         calls["remote"] = url
         return builder
 
+    client = SimpleNamespace(
+        disable_reattachable_execute=lambda: calls.__setitem__(
+            "reattachable_disabled", calls["reattachable_disabled"] + 1
+        )
+    )
+
     def _get_or_create():
         calls["created"] += 1
-        return "spark-session"
+        return SimpleNamespace(client=client)
 
     builder.appName = _app_name
     builder.remote = _remote
@@ -79,11 +86,29 @@ def test_spark_connect_waits_for_open_port_and_builds_session(monkeypatch):
         check_interval=0.4,
     )
 
-    assert spark == "spark-session"
+    assert spark.client is client
     assert calls["sleep"] == [0.4, 0.4]
     assert calls["app_name"] == "pytest-runtime"
     assert calls["remote"] == "sc://127.0.0.1:15003"
     assert calls["created"] == 1
+    assert calls["reattachable_disabled"] == 1
+
+
+def test_spark_connect_can_keep_reattachable_execution_enabled(monkeypatch):
+    client = SimpleNamespace(
+        disable_reattachable_execute=lambda: pytest.fail(
+            "reattachable execution should remain enabled"
+        )
+    )
+    session = SimpleNamespace(client=client)
+    builder = SimpleNamespace()
+    builder.appName = lambda name: builder
+    builder.remote = lambda url: builder
+    builder.getOrCreate = lambda: session
+    monkeypatch.setattr(runtime_spark, "is_port_open", lambda host, port: True)
+    monkeypatch.setattr(runtime_spark, "SparkSession", SimpleNamespace(builder=builder))
+
+    assert runtime_spark.spark_connect(reattachable_execute=True) is session
 
 
 def test_spark_connect_raises_timeout_when_port_never_opens(monkeypatch):
