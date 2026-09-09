@@ -33,6 +33,7 @@ def format_runtime(request):
                 detach=True,
                 ports={"15002/tcp": ("127.0.0.1", None)},
                 environment={"SPARK_MEMORY": "2", "SPARK_CORES": "2"},
+                extra_hosts={"host.docker.internal": "host-gateway"},
             )
             container.reload()
             port = int(container.attrs["NetworkSettings"]["Ports"]["15002/tcp"][0]["HostPort"])

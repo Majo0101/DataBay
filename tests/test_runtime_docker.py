@@ -97,6 +97,7 @@ def test_dock_creates_missing_volume_and_runs_new_container(monkeypatch):
         bind_mounts={"/host/landing": "/data/apache"},
         ports={"15002/tcp": 15002},
         env={"A": "B"},
+        extra_hosts={"host.docker.internal": "host-gateway"},
         network="net1",
         restart_policy={"Name": "unless-stopped"},
         wsl_uid=1000,
@@ -111,6 +112,9 @@ def test_dock_creates_missing_volume_and_runs_new_container(monkeypatch):
     assert state["run_kwargs"]["name"] == "spark-b"
     assert state["run_kwargs"]["detach"] is True
     assert state["run_kwargs"]["user"] == "1000:1001"
+    assert state["run_kwargs"]["extra_hosts"] == {
+        "host.docker.internal": "host-gateway"
+    }
     assert state["run_kwargs"]["volumes"] == {
         "lake": {"bind": "/lakehouse", "mode": "rw"},
         "/host/landing": {"bind": "/data/apache", "mode": "rw"},

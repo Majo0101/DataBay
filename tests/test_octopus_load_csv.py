@@ -112,7 +112,7 @@ def test_octopus_load_csv_raises_for_invalid_container_path(spark_session):
     octopus = Octopus(spark=spark_session)
     dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
-    with pytest.raises(ValueError, match="Container path must start with"):
+    with pytest.raises(ValueError, match="does not start with any mounted path"):
         octopus.load_csv(
             spark=spark_session,
             sources=[(str(SAMPLE_CSV), "invalid_csv")],

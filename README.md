@@ -59,19 +59,48 @@ python -m pip install -e .
 
 ## Local Testing
 
-Activate the Conda environment where DataBay is installed, then run from the repository root:
+Activate the Conda environment where DataBay is installed, then install the
+development dependencies from the repository root:
 
 ```bash
-conda activate YOUR_ENV
+conda activate YOUR_ENV_NAME
 python -m pip install -e ".[dev]"
+```
+
+Replace `YOUR_ENV_NAME` with the name of your Conda environment.
+
+For the fast test suite, which does not require Docker containers, run:
+
+```bash
+python -m pytest -m "not integration"
+```
+
+The full suite requires the Delta Spark runtime on port `15002`, the disposable
+PostgreSQL test database on port `5432`, and locally built Delta and Iceberg
+images. Start the required services from the repository root:
+
+```bash
+docker compose -f infra/delta_jdbc/docker-compose.yml up -d --build
+docker compose -f infra/psg_db/docker-compose.yml up -d --build
+docker build -t spark-pg-iceberg infra/iceberg_jdbc
+docker compose -f infra/delta_jdbc/docker-compose.yml ps
+docker compose -f infra/psg_db/docker-compose.yml ps
+```
+
+The image names are significant: the tests expect `spark-pg-delta` and
+`spark-pg-iceberg`. The Iceberg test starts and removes its own temporary
+container from the prebuilt image. Both Spark runtimes map
+`host.docker.internal` to Docker's host gateway. This is required by Docker
+Engine on Linux and is compatible with Docker Desktop on Windows. Once the two
+persistent services are ready, run the full suite:
+
+```bash
 python -m pytest
 ```
 
-The full suite requires the `spark-pg-delta` and `psg-db` test containers and includes large JDBC writes.
-For fast tests without containers, use `python -m pytest -m "not integration"`.
-Test runtime setup: [Delta](infra/delta_jdbc/README.md) and [PostgreSQL](infra/psg_db/README.md).
-The Iceberg test starts its own temporary container; build its image first with
-`docker build -t spark-pg-iceberg infra/iceberg_jdbc`.
+The full suite includes large JDBC writes and can take considerably longer than
+the fast suite. See the detailed runtime guides for [Delta](infra/delta_jdbc/README.md),
+[Iceberg](infra/iceberg_jdbc/README.md), and [PostgreSQL](infra/psg_db/README.md).
 
 ## Quick Start
 
@@ -80,7 +109,7 @@ The Iceberg test starts its own temporary container; build its image first with
 Build the image once from the repository root:
 
 ```bash
-docker build -t spark-delta-pg infra/delta_jdbc
+docker build -t spark-pg-delta infra/delta_jdbc
 ```
 
 Then run in your notebook. Adjust the heap and worker threads for your laptop:
@@ -90,7 +119,7 @@ from databay.runtime.docker import DockConfig, dock_spark_init
 
 # Configure Spark container
 config = DockConfig(
-    image="spark-delta-pg",
+    image="spark-pg-delta",
     name="databay-spark",
     ports={
         "4040/tcp": 4040,

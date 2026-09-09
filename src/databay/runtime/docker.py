@@ -14,14 +14,17 @@ class DockConfig:
     """Configuration used when creating a Spark container.
 
     Attributes:
-        image: Local Docker image; default "spark-delta-pg".
-        name: Container name used for lookup/reuse; default "spark-delta-pg".
+        image: Local Docker image; default "spark-pg-delta".
+        name: Container name used for lookup/reuse; default "spark-pg-delta".
         ports: Container-to-host mappings; defaults to 4040/tcp and 15002/tcp.
         named_volumes: Volume-to-container-path mappings. Defaults:
             spark-lakehouse -> /lakehouse, spark-metastore -> /metastore/pgdata.
         bind_mounts: Host-to-container paths; default empty. Mounts are read/write.
         env: Container environment; default empty. For project images, set
             SPARK_MEMORY (Java heap GiB) and SPARK_CORES (local worker threads).
+        extra_hosts: Hostname mappings passed to Docker. The default makes
+            host.docker.internal work with Docker Engine on Linux and remains
+            compatible with Docker Desktop on Windows.
         network: Docker network name, or None for Docker's default.
         restart_policy: Defaults to {"Name": "unless-stopped"}.
         wsl_uid: Optional Linux process UID; image must support running as this user.
@@ -34,8 +37,8 @@ class DockConfig:
     Example:
         >>> cfg = DockConfig(image="spark-pg-delta", name="spark-pg-delta")
     """
-    image: str = "spark-delta-pg"
-    name: str = "spark-delta-pg"
+    image: str = "spark-pg-delta"
+    name: str = "spark-pg-delta"
 
     ports: Dict[str, int] = field(default_factory=lambda: {"4040/tcp": 4040, "15002/tcp": 15002})
 
@@ -46,6 +49,9 @@ class DockConfig:
     bind_mounts: Dict[str, str] = field(default_factory=dict)
 
     env: Dict[str, str] = field(default_factory=dict)
+    extra_hosts: Dict[str, str] = field(
+        default_factory=lambda: {"host.docker.internal": "host-gateway"}
+    )
     network: Optional[str] = None
     restart_policy: Dict[str, Any] = field(default_factory=lambda: {"Name": "unless-stopped"})
     # Linux user/group to run container processes as (useful for WSL bind-mount writes)
@@ -106,6 +112,7 @@ def dock(cfg: DockConfig) -> str:
             ports=cfg.ports,
             volumes=volumes,
             environment=cfg.env,
+            extra_hosts=cfg.extra_hosts,
             network=cfg.network,
             user=user,
             restart_policy=cfg.restart_policy if cfg.restart_policy else None, # type: ignore

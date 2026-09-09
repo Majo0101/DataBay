@@ -19,6 +19,10 @@ services:
     ports:
       - "4040:4040"   # Spark UI
       - "15002:15002" # Spark Connect
+
+    # Required by Linux Docker Engine; compatible with Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     
     volumes:
       - iceberg-lakehouse:/lakehouse
