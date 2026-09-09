@@ -10,8 +10,8 @@ class DockConfig:
     """Configuration used when creating a Spark container.
 
     Attributes:
-        image: Local Docker image; default "spark-delta-pg".
-        name: Container name used for lookup/reuse; default "spark-delta-pg".
+        image: Local Docker image; default "spark-pg-delta".
+        name: Container name used for lookup/reuse; default "spark-pg-delta".
         ports: Container-to-host mappings; defaults to 4040/tcp and 15002/tcp.
         named_volumes: Volume-to-container-path mappings. Defaults:
             spark-lakehouse -> /lakehouse, spark-metastore -> /metastore/pgdata.
@@ -22,6 +22,8 @@ class DockConfig:
         restart_policy: Defaults to {"Name": "unless-stopped"}.
         wsl_uid: Optional Linux process UID; image must support running as this user.
         wsl_gid: Optional GID; used only when wsl_uid is set.
+        extra_hosts: Docker hostname mappings; defaults to
+            {"host.docker.internal": "host-gateway"} for Linux Engine and Docker Desktop.
 
     Existing containers are reused by name; changed settings are not applied
     automatically. Match names and volume mappings to your Compose configuration
@@ -40,6 +42,7 @@ class DockConfig:
     restart_policy: Dict[str, Any] = ...
     wsl_uid: Optional[int] = ...
     wsl_gid: Optional[int] = ...
+    extra_hosts: Dict[str, str] = ...
 
 
 def dock(cfg: DockConfig) -> str:

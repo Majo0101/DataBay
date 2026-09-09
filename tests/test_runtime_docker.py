@@ -6,6 +6,19 @@ from docker.errors import APIError, NotFound
 from databay.runtime import docker as runtime_docker
 
 
+def test_dock_config_preserves_original_positional_arguments():
+    config = runtime_docker.DockConfig(
+        "image", "name", {}, {}, {}, {}, "network", {"Name": "no"}, 1000, 1001,
+    )
+    assert config.network == "network"
+    assert config.restart_policy == {"Name": "no"}
+    assert (config.wsl_uid, config.wsl_gid) == (1000, 1001)
+    assert config.extra_hosts == {"host.docker.internal": "host-gateway"}
+    other = runtime_docker.DockConfig()
+    config.extra_hosts.clear()
+    assert other.extra_hosts == {"host.docker.internal": "host-gateway"}
+
+
 def _make_container(container_id: str, status: str = "running"):
     state = {
         "reload_called": False,

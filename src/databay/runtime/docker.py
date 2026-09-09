@@ -49,14 +49,14 @@ class DockConfig:
     bind_mounts: Dict[str, str] = field(default_factory=dict)
 
     env: Dict[str, str] = field(default_factory=dict)
-    extra_hosts: Dict[str, str] = field(
-        default_factory=lambda: {"host.docker.internal": "host-gateway"}
-    )
     network: Optional[str] = None
     restart_policy: Dict[str, Any] = field(default_factory=lambda: {"Name": "unless-stopped"})
     # Linux user/group to run container processes as (useful for WSL bind-mount writes)
     wsl_uid: Optional[int] = None
     wsl_gid: Optional[int] = None
+    extra_hosts: Dict[str, str] = field(
+        default_factory=lambda: {"host.docker.internal": "host-gateway"}
+    )
 
 
 def dock(cfg: DockConfig) -> str:

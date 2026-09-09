@@ -96,6 +96,7 @@ def test_spark_connect_waits_for_open_port_and_builds_session(monkeypatch):
 
 def test_spark_connect_can_keep_reattachable_execution_enabled(monkeypatch):
     client = SimpleNamespace(
+        enable_reattachable_execute=lambda: None,
         disable_reattachable_execute=lambda: pytest.fail(
             "reattachable execution should remain enabled"
         )
@@ -109,6 +110,25 @@ def test_spark_connect_can_keep_reattachable_execution_enabled(monkeypatch):
     monkeypatch.setattr(runtime_spark, "SparkSession", SimpleNamespace(builder=builder))
 
     assert runtime_spark.spark_connect(reattachable_execute=True) is session
+
+
+def test_spark_connect_changes_reattachment_on_reused_session(monkeypatch):
+    state = {"enabled": True}
+    client = SimpleNamespace(
+        enable_reattachable_execute=lambda: state.update(enabled=True),
+        disable_reattachable_execute=lambda: state.update(enabled=False),
+    )
+    session = SimpleNamespace(client=client)
+    builder = SimpleNamespace()
+    builder.appName = lambda name: builder
+    builder.remote = lambda url: builder
+    builder.getOrCreate = lambda: session
+    monkeypatch.setattr(runtime_spark, "is_port_open", lambda *args: True)
+    monkeypatch.setattr(runtime_spark, "SparkSession", SimpleNamespace(builder=builder))
+
+    for enabled in [False, True, False]:
+        assert runtime_spark.spark_connect(reattachable_execute=enabled) is session
+        assert state["enabled"] is enabled
 
 
 def test_spark_connect_raises_timeout_when_port_never_opens(monkeypatch):

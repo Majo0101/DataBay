@@ -34,6 +34,7 @@ def spark_connect(
         timeout: Maximum time in seconds to wait for connection (default: 8)
         check_interval: Time in seconds between connection attempts (default: 0.2)
         reattachable_execute: Enable Spark Connect execution reattachment.
+            The requested value is applied even when an existing session is reused.
             Disabled by default to avoid PySpark 4.0.1 client deadlocks during
             workloads with many short actions.
 

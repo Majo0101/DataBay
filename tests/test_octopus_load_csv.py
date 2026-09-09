@@ -108,14 +108,19 @@ def test_octopus_load_csv_raises_for_unmounted_path(spark_session):
 
 
 @pytest.mark.integration
-def test_octopus_load_csv_raises_for_invalid_container_path(spark_session):
+@pytest.mark.parametrize(("path", "message"), [
+    ("C:/data/sample.csv", "Container path must start with"),
+    ("relative/sample.csv", "Container path must start with"),
+    ("/host/unmounted/sample.csv", "does not start with any mounted path"),
+])
+def test_octopus_load_csv_raises_for_invalid_container_path(spark_session, path, message):
     octopus = Octopus(spark=spark_session)
     dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
-    with pytest.raises(ValueError, match="does not start with any mounted path"):
+    with pytest.raises(ValueError, match=message):
         octopus.load_csv(
             spark=spark_session,
-            sources=[(str(SAMPLE_CSV), "invalid_csv")],
+            sources=[(path, "invalid_csv")],
             dock_cfg=dock_cfg,
             mode="both",
         )
