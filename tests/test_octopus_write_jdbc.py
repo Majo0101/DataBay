@@ -1,28 +1,20 @@
+import os
+from dotenv import dotenv_values
+
 import pytest
 from typing import Any, cast
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
 from databay.etl import Octopus
-from databay.runtime.docker import DockConfig, dock
-from databay.runtime.spark import spark_connect
 
 
-TEST_PG_CONFIG = {
-    "HOST": "host.docker.internal",
-    "PORT": "5432",
-    "DATABASE": "testdb",
-    "USER": "test_user",
-    "PASSWORD": "test_pass",
-}
+# Validation tests do not connect to this placeholder database.
+UNIT_PG_CONFIG = {"HOST": "unused.invalid", "PORT": "5432", "DATABASE": "unused",
+                  "USER": "unused", "PASSWORD": "unused"}
+TEST_PG_CONFIG = dotenv_values(os.environ.get("DATABAY_TEST_JDBC_ENV", ".env.test"))
 
-WRONG_TEST_PG_CONFIG = {
-    "HOST": "host.docker.internal",
-    "PORT": "5432",
-    "DATABASE": "testdb",
-    "USER": "test_user",
-    "PASSWORD": "wrong_password",
-}
+WRONG_TEST_PG_CONFIG = {**TEST_PG_CONFIG, "PASSWORD": "wrong_password"}
 
 def _set_env_vars(octopus: Octopus, env: dict[str, str]) -> None:
     cast(Any, octopus).env_vars = env
@@ -56,30 +48,6 @@ def _build_dim_df(spark, row_count: int):
         .withColumn("category", F.concat(F.lit("cat_"), (F.col("id") % F.lit(20)).cast("string")))
         .withColumn("score", (F.col("id") / F.lit(10.0)).cast("double"))
     )
-
-
-@pytest.fixture(scope="module")
-def spark_session():
-    cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
-        bind_mounts={},
-    )
-
-    try:
-        dock(cfg)
-        spark = spark_connect(
-            app_name="pytest-databay-write-jdbc",
-            host="localhost",
-            port=15002,
-            timeout=20,
-            check_interval=0.5,
-        )
-    except Exception as exc:
-        pytest.skip(f"Runtime Spark startup unavailable: {exc}")
-
-    yield spark
-    spark.stop()
 
 
 def test_write_jdbc_raises_when_spark_is_missing():
@@ -143,14 +111,14 @@ def test_write_jdbc_partition_limit(
 
 def test_write_jdbc_raises_when_single_dataframe_missing_target_table():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
     with pytest.raises(ValueError, match="target_table is required"):
         octopus.write_jdbc(data=cast(Any, "dummy_df"))
 
 
 def test_write_jdbc_raises_when_dict_data_has_target_table():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
     with pytest.raises(ValueError, match="target_table must be None"):
         octopus.write_jdbc(data={"t1": cast(Any, "dummy_df")}, target_table="not_allowed")
 

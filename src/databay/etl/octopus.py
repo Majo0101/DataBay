@@ -2,11 +2,11 @@ import os
 import csv
 import time
 
-from typing import Optional
-from databay.runtime.docker import DockConfig
+from typing import Callable, Optional
 
-from pyspark.sql import functions as F
 from pyspark.sql.types import StructType
+
+from databay.core._columns import literal_col
 
 
 class Octopus:
@@ -15,7 +15,10 @@ class Octopus:
     Handles JDBC connections, data extraction, and CSV loading.
     """
     
-    def __init__(self, env_file=None, spark=None, engine=None):
+    def __init__(
+        self, env_file=None, spark=None, engine=None, *,
+        password_provider: Optional[Callable[[], str]] = None,
+    ):
         """
         Initialize Octopus with optional environment file and SparkSession.
         
@@ -23,11 +26,24 @@ class Octopus:
             env_file: Path to .env file containing database credentials
             spark: Active SparkSession instance (optional)
             engine: Database engine type (postgresql, mssql, oracle) (optional)
+            password_provider: Optional zero-argument callable returning a password.
+                Called once per read_jdbc/feed_spark/write_jdbc invocation, not at
+                construction. Overrides PASSWORD without fallback on failure.
 
         Notes:
-            Credentials use HOST, PORT, DATABASE, USER and PASSWORD. A nonempty
-            env file supplies the instance settings; otherwise OS environment is
-            used. JDBC runs on the Spark server, so HOST must be reachable there.
+            Credentials use HOST, PORT, DATABASE, USER and PASSWORD. Without
+            env_file, read the OS environment. An explicit file is the sole
+            settings source; every declared value must be nonempty and literal.
+            Variable references (${...}) are rejected; no interpolation occurs.
+            With password_provider, the other settings still come from the
+            selected source; PASSWORD can be omitted from the file. Provider
+            results are not cached in this instance or written to the file.
+            Returned lazy DataFrames retain their operation's password snapshot.
+            JDBC runs on the Spark server, so HOST must be reachable there.
+
+        Raises:
+            OSError: If an explicit credentials file cannot be opened.
+            ValueError: If the file contains no settings, empty values or variable references.
 
         Example:
             >>> octopus = Octopus(env_file=".env", spark=spark, engine="postgresql")
@@ -37,18 +53,45 @@ class Octopus:
         self.csv = csv
         self.spark = spark
         self.engine = engine
-        self.env_vars = {}  # Store instance-specific environment variables
+        if password_provider is not None and not callable(password_provider):
+            raise TypeError("password_provider must be callable")
+        self._password_provider = password_provider
+        self.env_vars = None  # None selects the OS environment; a dict selects explicit settings.
 
-        if env_file:
-            from dotenv import dotenv_values # type: ignore
-            self.env_vars = dotenv_values(env_file)
+        if env_file is not None:
+            from dotenv import dotenv_values
+            with open(env_file, encoding="utf-8") as stream:
+                self.env_vars = dotenv_values(stream=stream, interpolate=False)
+            if not self.env_vars:
+                raise ValueError("Credentials file is empty or contains no settings")
+            for key, value in self.env_vars.items():
+                if value is None or not value.strip():
+                    raise ValueError(f"Credentials setting {key!r} must have a nonempty literal value")
+                if "${" in value:
+                    raise ValueError(f"Credentials setting {key!r} must not reference other variables")
 
 
     def _get_env(self, key: str):
         """Get environment variable from instance dict or global OS environment"""
-        if self.env_vars:
+        if self.env_vars is not None:
             return self.env_vars.get(key)
         return self.os.getenv(key)
+
+    def _jdbc_connection(self):
+        """Resolve one password snapshot for the entire public JDBC operation."""
+        password = None
+        if self._password_provider is not None:
+            try:
+                password = self._password_provider()
+            except Exception:
+                # Provider errors may contain secrets or captured CLI output.
+                raise RuntimeError("Password provider failed; no fallback password was used") from None
+            if not isinstance(password, str) or not password.strip():
+                raise ValueError("Password provider must return a nonempty string; no fallback password was used")
+        return (
+            self._jdbc_url(self.engine, password=password),
+            self._jdbc_base_options(self.engine, password=password),
+        )
 
     def _jdbc_driver(self, engine: str):
         """Get JDBC driver class name for the specified engine"""
@@ -66,7 +109,7 @@ class Octopus:
             raise ValueError(f"Unsupported engine: {engine}")
         return driver
 
-    def _jdbc_base_options(self, engine: str):
+    def _jdbc_base_options(self, engine: str, *, password: Optional[str] = None):
         """
         Build base JDBC connection options from environment variables.
         Supports both username/password and interactive authentication for MSSQL.
@@ -86,7 +129,8 @@ class Octopus:
             "driver": self._jdbc_driver(engine),
         }
         
-        password = self._get_env("PASSWORD")
+        if password is None:
+            password = self._get_env("PASSWORD")
         
         # For MSSQL with interactive auth, add device code flow property
         if engine.lower() in ("mssql", "sqlserver") and not password:
@@ -97,7 +141,7 @@ class Octopus:
             
         return opts
 
-    def _jdbc_url(self, engine: str):
+    def _jdbc_url(self, engine: str, *, password: Optional[str] = None):
         """
         Construct JDBC connection URL based on database engine type.
         Reads HOST, PORT, and DATABASE from environment variables.
@@ -119,7 +163,8 @@ class Octopus:
         host = self._get_env("HOST")
         port = self._get_env("PORT")
         db = self._get_env("DATABASE")
-        password = self._get_env("PASSWORD")
+        if password is None:
+            password = self._get_env("PASSWORD")
 
         # For MSSQL with interactive auth, DATABASE is optional
         if engine in ("mssql", "sqlserver") and not password:
@@ -211,7 +256,7 @@ class Octopus:
         Args:
             queries: List of (query, table_name) tuples to execute and save
             target_schema: Target namespace, optionally catalog-qualified
-                (for example "lake.raw" for the bundled Iceberg runtime).
+                (for example "lake.raw" for an Iceberg catalog).
             batch_size: Number of rows to fetch per round trip (default: 10000)
             num_partitions: Number of JDBC partitions when parallel_read=True
             parallel_read: Enable JDBC parallel read partitioning (default: False)
@@ -248,8 +293,7 @@ class Octopus:
         if table_format not in ("delta", "iceberg"):
             raise ValueError("table_format must be 'delta' or 'iceberg'")
 
-        url = self._jdbc_url(self.engine)
-        opts = self._jdbc_base_options(self.engine)
+        url, opts = self._jdbc_connection()
         
         # Add MSSQL-specific SSL/encryption options
         if self.engine.lower() in ("mssql", "sqlserver"):
@@ -288,7 +332,7 @@ class Octopus:
             df = self._load_jdbc(reader, schema)
 
             if schema is None and not infer_schema:
-                df = df.select([F.col(c).cast("string").alias(c) for c in df.columns])
+                df = df.select([literal_col(c).cast("string").alias(c) for c in df.columns])
 
             target = f"{target_schema}.{table_name}"
             if table_format == "iceberg":
@@ -354,8 +398,7 @@ class Octopus:
         if self.engine is None:
             raise RuntimeError("Engine is not set")
 
-        url = self._jdbc_url(self.engine)
-        opts = self._jdbc_base_options(self.engine)
+        url, opts = self._jdbc_connection()
 
         # Add MSSQL-specific SSL/encryption options
         if self.engine.lower() in ("mssql", "sqlserver"):
@@ -396,7 +439,7 @@ class Octopus:
             df = self._load_jdbc(reader, schema)
 
             if schema is None and not infer_schema:
-                df = df.select([F.col(c).cast("string").alias(c) for c in df.columns])
+                df = df.select([literal_col(c).cast("string").alias(c) for c in df.columns])
 
             dfs[table_name] = df
 
@@ -452,8 +495,7 @@ class Octopus:
         ):
             raise ValueError("num_partitions must be an integer >= 1")
 
-        url = self._jdbc_url(self.engine)
-        opts = self._jdbc_base_options(self.engine)
+        url, opts = self._jdbc_connection()
 
         # Add MSSQL-specific SSL/encryption options
         if self.engine.lower() in ("mssql", "sqlserver"):
@@ -494,9 +536,7 @@ class Octopus:
 
     def load_csv(
         self,
-        spark,
         sources,
-        dock_cfg: DockConfig,
         delimiter="|",
         header=True,
         infer_schema=False,
@@ -504,12 +544,10 @@ class Octopus:
         csv_read_mode="PERMISSIVE",
     ):
         """
-        Load CSV files from Docker-mounted volumes into Spark.
+        Load CSV files using the instance session and Spark-accessible paths or URIs.
         
         Args:
-            spark: Active SparkSession; None falls back to the instance session
-            sources: List of (container_path, table_name) tuples where container_path starts with '/'
-            dock_cfg: DockConfig containing bind_mounts mapping
+            sources: List of (path, table_name) tuples; paths are resolved by Spark
             delimiter: CSV delimiter character (default: "|")
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
@@ -522,15 +560,14 @@ class Octopus:
 
         Example:
             >>> frames = octopus.load_csv(
-            ...     spark, [("/data/apache/customers.csv", "customers")],
-            ...     dock_cfg, delimiter=",", mode="both")
+            ...     [("/data/apache/customers.csv", "customers")],
+            ...     delimiter=",", mode="both")
             
         Raises:
             RuntimeError: If SparkSession is None
-            ValueError: If container_path does not start with a mounted path
+            ValueError: If an output or CSV parser mode is invalid
         """
-        if spark is None:
-            spark = self.spark
+        spark = self.spark
         if spark is None:
             raise RuntimeError("SparkSession is not set")
         if mode not in {"view", "dfs", "both"}:
@@ -546,32 +583,14 @@ class Octopus:
         keep_dfs = mode in {"dfs", "both"}
         dfs = {} if keep_dfs else None
 
-        for container_path, name in sources:
-            
-            # Basic validation - container path must start with /
-            if not container_path.startswith("/"):
-                raise ValueError(f"Container path must start with '/': {container_path}")
-            
-            # Check if path starts with one of the mounted container paths
-            valid_mount = False
-            for mount_container in dock_cfg.bind_mounts.values():
-                if container_path.startswith(mount_container):
-                    valid_mount = True
-                    break
-            
-            if not valid_mount:
-                mounted_paths = ", ".join(dock_cfg.bind_mounts.values())
-                raise ValueError(
-                    f"Container path '{container_path}' does not start with any mounted path: {mounted_paths}"
-                )
-            
+        for path, name in sources:
             df = (
                 spark.read
                 .option("header", header)
                 .option("inferSchema", infer_schema)
                 .option("delimiter", delimiter)
                 .option("mode", csv_read_mode)
-                .csv(container_path)
+                .csv(path)
             )
 
             if create_view:

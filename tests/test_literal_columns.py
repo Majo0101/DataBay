@@ -18,22 +18,9 @@ from databay import (
     row_level_rules,
     select_informative_columns,
 )
-from databay.runtime.docker import DockConfig, dock
-from databay.runtime.spark import spark_connect
 
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def spark():
-    try:
-        dock(DockConfig(image="spark-pg-delta", name="spark-pg-delta"))
-        session = spark_connect(app_name="pytest-databay-literal-columns", timeout=20)
-    except Exception as exc:
-        pytest.skip(f"Runtime Spark startup unavailable: {exc}")
-    yield session
-    session.stop()
 
 
 @pytest.fixture(params=["customer.id", "customer`id", "customer id"])

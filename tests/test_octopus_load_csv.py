@@ -1,17 +1,8 @@
-from pathlib import Path
+import os
 
 import pytest
 
 from databay.etl import Octopus
-from databay.runtime.docker import DockConfig, dock
-from databay.runtime.spark import spark_connect
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LANDING_DIR = PROJECT_ROOT / "data" / "landing"
-SAMPLE_CSV = LANDING_DIR / "sample_customers.csv"
-CONTAINER_LANDING_DIR = "/data/apache"
-CONTAINER_SAMPLE_CSV = f"{CONTAINER_LANDING_DIR}/{SAMPLE_CSV.name}"
-
 
 class _FakeDataFrame:
     def __init__(self):
@@ -42,43 +33,19 @@ class _FakeSpark:
 
 
 @pytest.fixture(scope="module")
-def spark_session():
-    cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
-        bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR},
-    )
-
-    try:
-        dock(cfg)
-        spark = spark_connect(
-            app_name="pytest-databay-octopus",
-            host="localhost",
-            port=15002,
-            timeout=20,
-            check_interval=0.5,
-        )
-    except Exception as exc:
-        pytest.skip(f"Runtime Spark startup unavailable: {exc}")
-    yield spark
-    spark.stop()
-
-
-@pytest.fixture(scope="module")
 def landing_csv_path() -> str:
-    assert SAMPLE_CSV.is_file(), f"Missing repository CSV fixture: {SAMPLE_CSV}"
-    return CONTAINER_SAMPLE_CSV
+    path = os.environ.get("DATABAY_TEST_CSV_PATH")
+    if not path:
+        pytest.skip("Set DATABAY_TEST_CSV_PATH to a CSV accessible to the Spark server")
+    return path
 
 
 @pytest.mark.integration
-def test_octopus_load_csv_reads_mounted_csv(spark_session, landing_csv_path):
+def test_octopus_load_csv_reads_csv(spark_session, landing_csv_path):
     octopus = Octopus(spark=spark_session)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     dfs = octopus.load_csv(
-        spark=spark_session,
         sources=[(landing_csv_path, "landing_csv")],
-        dock_cfg=dock_cfg,
         delimiter=",",
         header=True,
         infer_schema=True,
@@ -93,65 +60,24 @@ def test_octopus_load_csv_reads_mounted_csv(spark_session, landing_csv_path):
     assert df.count() > 0
 
 
-@pytest.mark.integration
-def test_octopus_load_csv_raises_for_unmounted_path(spark_session):
-    octopus = Octopus(spark=spark_session)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
-
-    with pytest.raises(ValueError, match="does not start with any mounted path"):
-        octopus.load_csv(
-            spark=spark_session,
-            sources=[("/data/missing", "missing_csv")],
-            dock_cfg=dock_cfg,
-            mode="both",
-        )
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize(("path", "message"), [
-    ("C:/data/sample.csv", "Container path must start with"),
-    ("relative/sample.csv", "Container path must start with"),
-    ("/host/unmounted/sample.csv", "does not start with any mounted path"),
-])
-def test_octopus_load_csv_raises_for_invalid_container_path(spark_session, path, message):
-    octopus = Octopus(spark=spark_session)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
-
-    with pytest.raises(ValueError, match=message):
-        octopus.load_csv(
-            spark=spark_session,
-            sources=[(path, "invalid_csv")],
-            dock_cfg=dock_cfg,
-            mode="both",
-        )
-
-
 @pytest.mark.parametrize("invalid_mode", ["", "invalid", "view_only"])
-@pytest.mark.integration
-def test_octopus_load_csv_raises_for_invalid_mode(spark_session, invalid_mode):
-    octopus = Octopus(spark=spark_session)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
+def test_octopus_load_csv_raises_for_invalid_mode(invalid_mode):
+    octopus = Octopus(spark=object())
 
     with pytest.raises(ValueError, match="mode must be one of"):
         octopus.load_csv(
-            spark=spark_session,
             sources=[("/data/apache", "landing_csv")],
-            dock_cfg=dock_cfg,
             mode=invalid_mode,
         )
 
 
 @pytest.mark.parametrize("invalid_csv_read_mode", ["", "strict", "permiss"])
-@pytest.mark.integration
-def test_octopus_load_csv_raises_for_invalid_csv_read_mode(spark_session, invalid_csv_read_mode):
-    octopus = Octopus(spark=spark_session)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
+def test_octopus_load_csv_raises_for_invalid_csv_read_mode(invalid_csv_read_mode):
+    octopus = Octopus(spark=object())
 
     with pytest.raises(ValueError, match="csv_read_mode must be one of"):
         octopus.load_csv(
-            spark=spark_session,
             sources=[("/data/apache", "landing_csv")],
-            dock_cfg=dock_cfg,
             csv_read_mode=invalid_csv_read_mode,
         )
 
@@ -162,12 +88,9 @@ def test_octopus_load_csv_view_mode_creates_temp_view_and_returns_none():
     fake_spark = _FakeSpark(fake_reader)
 
     octopus = Octopus(spark=fake_spark)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     result = octopus.load_csv(
-        spark=fake_spark,
         sources=[("/data/apache", "landing_csv")],
-        dock_cfg=dock_cfg,
         mode="view",
     )
 
@@ -176,18 +99,19 @@ def test_octopus_load_csv_view_mode_creates_temp_view_and_returns_none():
     assert fake_reader.last_csv_path == "/data/apache"
 
 
-def test_octopus_load_csv_dfs_mode_returns_dict_without_creating_view():
+@pytest.mark.parametrize("path", [
+    "relative/customers.csv", "/data/customers.csv", "s3a://bucket/customers.csv",
+    "abfss://container@account.dfs.core.windows.net/customers.csv",
+])
+def test_octopus_load_csv_dfs_mode_returns_dict_without_creating_view(path):
     fake_df = _FakeDataFrame()
     fake_reader = _FakeReader(fake_df)
     fake_spark = _FakeSpark(fake_reader)
 
     octopus = Octopus(spark=fake_spark)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     result = octopus.load_csv(
-        spark=fake_spark,
-        sources=[("/data/apache", "landing_csv")],
-        dock_cfg=dock_cfg,
+        sources=[(path, "landing_csv")],
         mode="dfs",
     )
 
@@ -195,7 +119,7 @@ def test_octopus_load_csv_dfs_mode_returns_dict_without_creating_view():
     assert "landing_csv" in result
     assert result["landing_csv"] is fake_df
     assert fake_df.views == []
-    assert fake_reader.last_csv_path == "/data/apache"
+    assert fake_reader.last_csv_path == path
     assert fake_reader.options["mode"] == "PERMISSIVE"
 
 
@@ -205,12 +129,9 @@ def test_octopus_load_csv_sets_custom_csv_read_mode():
     fake_spark = _FakeSpark(fake_reader)
 
     octopus = Octopus(spark=fake_spark)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     result = octopus.load_csv(
-        spark=fake_spark,
         sources=[("/data/apache", "landing_csv")],
-        dock_cfg=dock_cfg,
         mode="dfs",
         csv_read_mode="failfast",
     )
@@ -219,18 +140,15 @@ def test_octopus_load_csv_sets_custom_csv_read_mode():
     assert fake_reader.options["mode"] == "FAILFAST"
 
 
-def test_octopus_load_csv_uses_self_spark_when_spark_argument_is_none():
+def test_octopus_load_csv_accepts_positional_sources_with_instance_session():
     fake_df = _FakeDataFrame()
     fake_reader = _FakeReader(fake_df)
     fake_spark = _FakeSpark(fake_reader)
 
     octopus = Octopus(spark=fake_spark)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     result = octopus.load_csv(
-        spark=None,
-        sources=[("/data/apache", "landing_csv")],
-        dock_cfg=dock_cfg,
+        [("/data/apache", "landing_csv")],
         mode="dfs",
     )
 
@@ -241,12 +159,9 @@ def test_octopus_load_csv_uses_self_spark_when_spark_argument_is_none():
 
 def test_octopus_load_csv_raises_when_no_spark_is_available():
     octopus = Octopus(spark=None)
-    dock_cfg = DockConfig(bind_mounts={str(LANDING_DIR): CONTAINER_LANDING_DIR})
 
     with pytest.raises(RuntimeError, match="SparkSession is not set"):
         octopus.load_csv(
-            spark=None,
             sources=[("/data/apache", "landing_csv")],
-            dock_cfg=dock_cfg,
             mode="both",
         )

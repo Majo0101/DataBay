@@ -11,34 +11,8 @@ from databay import (
     row_level_rules,
     select_informative_columns,
 )
-from databay.runtime.docker import DockConfig, dock
-from databay.runtime.spark import spark_connect
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def spark():
-    cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
-        bind_mounts={},
-    )
-
-    try:
-        dock(cfg)
-        spark_session = spark_connect(
-            app_name="pytest-databay-quality",
-            host="localhost",
-            port=15002,
-            timeout=20,
-            check_interval=0.5,
-        )
-    except Exception as exc:
-        pytest.skip(f"Runtime Spark startup unavailable: {exc}")
-
-    yield spark_session
-    spark_session.stop()
 
 
 def _summary_dict(df):

@@ -1,56 +1,24 @@
+import os
+from dotenv import dotenv_values
+
 import pytest
 from typing import Any, cast
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
 from databay.etl import Octopus
-from databay.runtime.docker import DockConfig, dock
-from databay.runtime.spark import spark_connect
 
 
-TEST_PG_CONFIG = {
-    "HOST": "host.docker.internal",
-    "PORT": "5432",
-    "DATABASE": "testdb",
-    "USER": "test_user",
-    "PASSWORD": "test_pass",
-}
+# Validation tests do not connect to this placeholder database.
+UNIT_PG_CONFIG = {"HOST": "unused.invalid", "PORT": "5432", "DATABASE": "unused",
+                  "USER": "unused", "PASSWORD": "unused"}
+TEST_PG_CONFIG = dotenv_values(os.environ.get("DATABAY_TEST_JDBC_ENV", ".env.test"))
 
-WRONG_TEST_PG_CONFIG = {
-    "HOST": "host.docker.internal",
-    "PORT": "5432",
-    "DATABASE": "testdb",
-    "USER": "test_user",
-    "PASSWORD": "wrong_password",
-}
+WRONG_TEST_PG_CONFIG = {**TEST_PG_CONFIG, "PASSWORD": "wrong_password"}
 
 
 def _set_env_vars(octopus: Octopus, env: dict[str, str]) -> None:
     cast(Any, octopus).env_vars = env
-
-
-@pytest.fixture(scope="module")
-def spark_session():
-    cfg = DockConfig(
-        image="spark-pg-delta",
-        name="spark-pg-delta",
-        bind_mounts={},
-    )
-
-    try:
-        dock(cfg)
-        spark = spark_connect(
-            app_name="pytest-databay-feed-spark",
-            host="localhost",
-            port=15002,
-            timeout=20,
-            check_interval=0.5,
-        )
-    except Exception as exc:
-        pytest.skip(f"Runtime Spark startup unavailable: {exc}")
-
-    yield spark
-    spark.stop()
 
 
 @pytest.fixture(scope="module")
@@ -102,7 +70,7 @@ def test_feed_spark_raises_when_engine_is_missing():
 
 def test_feed_spark_raises_when_parallel_read_without_partition_column():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
 
     with pytest.raises(ValueError, match="partition_column is required"):
         octopus.feed_spark(
@@ -117,7 +85,7 @@ def test_feed_spark_raises_when_parallel_read_without_partition_column():
 
 def test_feed_spark_raises_when_parallel_read_without_bounds():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
 
     with pytest.raises(ValueError, match="lower_bound and upper_bound are required"):
         octopus.feed_spark(
@@ -131,7 +99,7 @@ def test_feed_spark_raises_when_parallel_read_without_bounds():
 
 def test_feed_spark_raises_when_parallel_read_invalid_num_partitions():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
 
     with pytest.raises(ValueError, match="num_partitions must be >= 1"):
         octopus.feed_spark(
@@ -147,7 +115,7 @@ def test_feed_spark_raises_when_parallel_read_invalid_num_partitions():
 
 def test_feed_spark_raises_when_parallel_read_invalid_bounds():
     octopus = Octopus(spark=cast(Any, "dummy_spark"), engine="postgresql")
-    _set_env_vars(octopus, TEST_PG_CONFIG)
+    _set_env_vars(octopus, UNIT_PG_CONFIG)
 
     with pytest.raises(ValueError, match="lower_bound must be less than upper_bound"):
         octopus.feed_spark(

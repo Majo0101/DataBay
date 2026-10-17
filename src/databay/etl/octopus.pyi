@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import StructType
-
-from databay.runtime.docker import DockConfig
 
 
 class Octopus:
@@ -18,6 +16,8 @@ class Octopus:
         env_file: Optional[str] = None,
         spark: Optional[SparkSession] = None,
         engine: Optional[str] = None,
+        *,
+        password_provider: Optional[Callable[[], str]] = None,
     ) -> None:
         """Initialize Octopus with optional environment file and SparkSession.
 
@@ -25,11 +25,24 @@ class Octopus:
             env_file: Path to .env file containing database credentials
             spark: Active SparkSession instance (optional)
             engine: Database engine type (postgresql, mssql, oracle) (optional)
+            password_provider: Optional zero-argument callable returning a password.
+                Called once per read_jdbc/feed_spark/write_jdbc invocation, not at
+                construction. Overrides PASSWORD without fallback on failure.
 
         Notes:
-            Credentials use HOST, PORT, DATABASE, USER and PASSWORD. A nonempty
-            env file supplies the instance settings; otherwise OS environment is
-            used. JDBC runs on the Spark server, so HOST must be reachable there.
+            Credentials use HOST, PORT, DATABASE, USER and PASSWORD. Without
+            env_file, read the OS environment. An explicit file is the sole
+            settings source; every declared value must be nonempty and literal.
+            Variable references (${...}) are rejected; no interpolation occurs.
+            With password_provider, the other settings still come from the
+            selected source; PASSWORD can be omitted from the file. Provider
+            results are not cached in this instance or written to the file.
+            Returned lazy DataFrames retain their operation's password snapshot.
+            JDBC runs on the Spark server, so HOST must be reachable there.
+
+        Raises:
+            OSError: If an explicit credentials file cannot be opened.
+            ValueError: If the file contains no settings, empty values or variable references.
 
         Example:
             >>> octopus = Octopus(env_file=".env", spark=spark, engine="postgresql")
@@ -65,7 +78,7 @@ class Octopus:
         Args:
             queries: List of (query, table_name) tuples to execute and save
             target_schema: Target namespace, optionally catalog-qualified
-                (for example "lake.raw" for the bundled Iceberg runtime).
+                (for example "lake.raw" for an Iceberg catalog).
             batch_size: Number of rows to fetch per round trip (default: 10000)
             num_partitions: Number of JDBC partitions when parallel_read=True
             parallel_read: Enable JDBC parallel read partitioning (default: False)
@@ -186,21 +199,17 @@ class Octopus:
 
     def load_csv(
         self,
-        spark: Optional[SparkSession],
         sources: List[Tuple[str, str]],
-        dock_cfg: DockConfig,
         delimiter: str = "|",
         header: bool = True,
         infer_schema: bool = False,
         mode: str = "both",
         csv_read_mode: str = "PERMISSIVE",
     ) -> Optional[Dict[str, DataFrame]]:
-        """Load CSV files from Docker-mounted volumes into Spark.
+        """Load CSV files using the instance session and Spark-accessible paths or URIs.
 
         Args:
-            spark: Active SparkSession; None falls back to the instance session
-            sources: List of (container_path, table_name) tuples where container_path starts with '/'
-            dock_cfg: DockConfig containing bind_mounts mapping
+            sources: List of (path, table_name) tuples; paths are resolved by Spark
             delimiter: CSV delimiter character (default: "|")
             header: Whether CSV has header row (default: True)
             infer_schema: Whether to infer schema from data (default: False)
@@ -213,11 +222,11 @@ class Octopus:
 
         Example:
             >>> frames = octopus.load_csv(
-            ...     spark, [("/data/apache/customers.csv", "customers")],
-            ...     dock_cfg, delimiter=",", mode="both")
+            ...     [("/data/apache/customers.csv", "customers")],
+            ...     delimiter=",", mode="both")
 
         Raises:
             RuntimeError: If SparkSession is None
-            ValueError: If container_path does not start with a mounted path
+            ValueError: If an output or CSV parser mode is invalid
         """
         ...

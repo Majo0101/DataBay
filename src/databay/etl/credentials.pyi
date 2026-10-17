@@ -1,0 +1,3 @@
+def bitwarden_password(item_id: str, *, timeout: float = 10) -> str:
+    """Read a login item's password through the infrastructure's unlocked bw CLI."""
+    ...

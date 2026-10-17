@@ -1,14 +1,15 @@
-"""JDBC-to-lakehouse format tests; build both project runtime images first."""
+"""JDBC-to-lakehouse tests against a caller-provided Spark server."""
 
+import os
 import uuid
+
+from dotenv import dotenv_values
 from typing import Any, cast
 
-import docker
 import pytest
 from pyspark.sql.types import StringType, StructField, StructType
 
 from databay.etl import Octopus
-from databay.runtime.spark import spark_connect
 
 
 @pytest.mark.parametrize("value", [None, "parquet", "ICEBERG", "", 1, []])
@@ -19,33 +20,11 @@ def test_feed_rejects_invalid_table_format_before_io(value):
 
 
 @pytest.fixture(params=["delta", "iceberg"])
-def format_runtime(request):
-    table_format = request.param
-    container = None
-    client = None
-    spark = None
-    try:
-        port = 15002
-        if table_format == "iceberg":
-            client = docker.from_env()
-            container = client.containers.run(
-                "spark-pg-iceberg",
-                detach=True,
-                ports={"15002/tcp": ("127.0.0.1", None)},
-                environment={"SPARK_MEMORY": "2", "SPARK_CORES": "2"},
-                extra_hosts={"host.docker.internal": "host-gateway"},
-            )
-            container.reload()
-            port = int(container.attrs["NetworkSettings"]["Ports"]["15002/tcp"][0]["HostPort"])
-        spark = spark_connect(port=port, timeout=60)
-        yield table_format, spark
-    finally:
-        if spark is not None:
-            spark.stop()
-        if container is not None:
-            container.remove(force=True, v=True)
-        if client is not None:
-            client.close()
+def format_runtime(request, spark_session):
+    formats = os.environ.get("DATABAY_TEST_TABLE_FORMATS", "").split(",")
+    if request.param not in formats:
+        pytest.skip("Enable configured formats with DATABAY_TEST_TABLE_FORMATS")
+    return request.param, spark_session
 
 
 @pytest.mark.integration
@@ -53,12 +32,11 @@ def test_feed_table_formats_create_replace_and_schema(format_runtime):
     table_format, spark = format_runtime
     namespace = "feed_format_" + uuid.uuid4().hex[:12]
     if table_format == "iceberg":
-        namespace = "lake." + namespace
+        namespace = os.environ.get("DATABAY_TEST_ICEBERG_CATALOG", "lake") + "." + namespace
     octopus = Octopus(spark=spark, engine="postgresql")
-    cast(Any, octopus).env_vars = {
-        "HOST": "host.docker.internal", "PORT": "5432", "DATABASE": "testdb",
-        "USER": "test_user", "PASSWORD": "test_pass",
-    }
+    cast(Any, octopus).env_vars = dotenv_values(
+        os.environ.get("DATABAY_TEST_JDBC_ENV", ".env.test")
+    )
     options = {"table_format": table_format}
     try:
         # Omitting the option still writes Delta; the explicit option is used below.
