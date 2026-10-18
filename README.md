@@ -55,9 +55,6 @@ The `.env` file contains `HOST`, `DATABASE`, `USER`, `PASSWORD` and optional `PO
 `read_jdbc()` returns lazy Spark DataFrames. Use `write_jdbc()` to write to a
 database or `feed_spark()` to load Delta or Iceberg tables.
 
-See [connections and credentials](docs/connections.md) for Bitwarden setup,
-connection providers, JDBC timeouts and error handling.
-
 ## Notebooks
 
 - [DataBay examples](examples/main.ipynb)
