@@ -18,13 +18,19 @@ class Octopus:
         engine: Optional[str] = None,
         *,
         password_provider: Optional[Callable[[], str]] = None,
+        connection_provider: Optional[Callable[[], dict[str, str]]] = None,
     ) -> None:
         """Initialize Octopus with optional environment file and SparkSession.
 
         Args:
             env_file: Path to .env file containing database credentials
             spark: Active SparkSession instance (optional)
-            engine: Database engine type (postgresql, mssql, oracle) (optional)
+            engine: Database engine type (postgresql, mssql, oracle) (optional).
+                Validated and normalized to lowercase at construction.
+            connection_provider: Optional callable returning HOST, DATABASE and
+                optional PORT with USER/PASSWORD.
+                Cannot be combined with env_file or password_provider.
+                Called once per JDBC operation without environment fallback.
             password_provider: Optional zero-argument callable returning a password.
                 Called once per read_jdbc/feed_spark/write_jdbc invocation, not at
                 construction. Overrides PASSWORD without fallback on failure.
@@ -64,6 +70,10 @@ class Octopus:
         trust_server_certificate: bool = True,
         encrypt: bool = False,
         table_format: Literal["delta", "iceberg"] = "delta",
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ) -> None:
         """Load data from database via JDBC into Delta or Iceberg tables.
         Creates schema if it doesn't exist and overwrites existing tables.
@@ -75,7 +85,17 @@ class Octopus:
         writes immediately and returns None. Tables are written sequentially;
         a later failure does not roll back earlier writes.
 
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             queries: List of (query, table_name) tuples to execute and save
             target_schema: Target namespace, optionally catalog-qualified
                 (for example "lake.raw" for an Iceberg catalog).
@@ -122,6 +142,10 @@ class Octopus:
         schema: Optional[StructType] = None,
         trust_server_certificate: bool = True,
         encrypt: bool = False,
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ) -> Dict[str, DataFrame]:
         """Read data from database via JDBC into Spark DataFrames (without writing tables).
 
@@ -132,7 +156,17 @@ class Octopus:
         num_partitions >= 1. Bounds divide reads; they do not filter source rows.
         These options are ignored when parallel_read=False.
 
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             queries: List of (query, alias) tuples used to construct DataFrames
             batch_size: Number of rows to fetch per round trip (default: 10000)
             num_partitions: Number of JDBC partitions when parallel_read=True
@@ -172,10 +206,24 @@ class Octopus:
         trust_server_certificate: bool = True,
         encrypt: bool = False,
         num_partitions: int = 4,
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ) -> None:
         """Write Spark DataFrame(s) to a JDBC database table.
 
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             data: DataFrame or dict[str, DataFrame]. If dict, keys are table names.
             target_table: Required when data is a single DataFrame.
             target_schema: Optional schema prefix for destination table(s).

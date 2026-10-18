@@ -91,13 +91,16 @@ def test_provider_selects_mssql_password_auth_without_env_password(tmp_path):
     assert options["password"] == "secret"
 
 
-def test_env_only_mssql_interactive_auth_is_unchanged(monkeypatch):
+def test_env_only_mssql_does_not_start_interactive_auth(monkeypatch):
     monkeypatch.delenv("PASSWORD", raising=False)
     monkeypatch.setenv("HOST", "db-host")
+    monkeypatch.setenv("DATABASE", "analytics")
     octopus = Octopus(engine="mssql")
     url, options = octopus._jdbc_connection()
-    assert "authentication=ActiveDirectoryInteractive" in url
-    assert options["authentication"] == "ActiveDirectoryInteractive"
+    assert url == "jdbc:sqlserver://db-host;databaseName=analytics"
+    assert options["password"] is None
+    assert "authentication" not in options
+    assert "enableDeviceCodeFlow" not in options
 
 
 def test_provider_is_not_called_for_csv():
@@ -109,3 +112,48 @@ def test_provider_is_not_called_for_csv():
 def test_provider_must_be_callable():
     with pytest.raises(TypeError, match="must be callable"):
         Octopus(password_provider="not-a-function")
+
+
+@pytest.mark.parametrize("operation", ["read", "feed", "write"])
+def test_connection_provider_is_operation_scoped_without_env_fallback(monkeypatch, operation):
+    monkeypatch.setenv("HOST", "wrong-host")
+    monkeypatch.setenv("PORT", "9999")
+    calls = []
+    def provider():
+        calls.append(True)
+        return {"HOST": "postgres", "DATABASE": "test", "USER": "db-user", "PASSWORD": f"secret-{len(calls)}"}
+    runtime, frame, captured = _runtime()
+    octopus = Octopus(spark=runtime, engine="postgresql", connection_provider=provider)
+    assert calls == []
+    _invoke(octopus, operation, frame)
+    assert len(calls) == 1
+    assert [o["password"] for o in captured] == ["secret-1", "secret-1"]
+    assert octopus._jdbc_url("postgresql", settings=provider()) == "jdbc:postgresql://postgres/test"
+    assert octopus.env_vars is None
+    captured.clear()
+    _invoke(octopus, operation, frame)
+    assert [o["password"] for o in captured] == ["secret-3", "secret-3"]
+
+
+def test_connection_provider_failure_never_falls_back(monkeypatch):
+    monkeypatch.setenv("PASSWORD", "fallback-secret")
+    def fail():
+        raise ValueError("sensitive-output")
+    octopus = Octopus(engine="postgresql", connection_provider=fail)
+    with pytest.raises(RuntimeError, match="no fallback") as caught:
+        octopus._jdbc_connection()
+    assert "sensitive" not in str(caught.value)
+
+
+@pytest.mark.parametrize("settings", [None, {}, {"HOST": "postgres"}])
+def test_incomplete_connection_provider_is_rejected(settings):
+    octopus = Octopus(engine="postgresql", connection_provider=lambda: settings)
+    with pytest.raises(ValueError):
+        octopus._jdbc_connection()
+
+
+def test_connection_provider_conflicts_are_rejected():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        Octopus(connection_provider=lambda: {}, password_provider=lambda: "secret")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        Octopus(connection_provider=lambda: {}, env_file="not-read.env")

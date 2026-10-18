@@ -1,12 +1,16 @@
 import os
 import csv
 import time
+import ipaddress
+import re
+from urllib.parse import quote
 
 from typing import Callable, Optional
 
 from pyspark.sql.types import StructType
 
 from databay.core._columns import literal_col
+from databay.etl.credentials import BitwardenError
 
 
 class Octopus:
@@ -18,6 +22,7 @@ class Octopus:
     def __init__(
         self, env_file=None, spark=None, engine=None, *,
         password_provider: Optional[Callable[[], str]] = None,
+        connection_provider: Optional[Callable[[], dict[str, str]]] = None,
     ):
         """
         Initialize Octopus with optional environment file and SparkSession.
@@ -25,7 +30,12 @@ class Octopus:
         Args:
             env_file: Path to .env file containing database credentials
             spark: Active SparkSession instance (optional)
-            engine: Database engine type (postgresql, mssql, oracle) (optional)
+            engine: Database engine type (postgresql, mssql, oracle) (optional).
+                Validated and normalized to lowercase at construction.
+            connection_provider: Optional zero-argument callable returning HOST, PORT,
+                DATABASE, USER and PASSWORD in a dictionary. PORT is optional.
+                Called once per JDBC operation; never falls back to environment.
+                Cannot be combined with env_file or password_provider.
             password_provider: Optional zero-argument callable returning a password.
                 Called once per read_jdbc/feed_spark/write_jdbc invocation, not at
                 construction. Overrides PASSWORD without fallback on failure.
@@ -52,9 +62,20 @@ class Octopus:
         self.time = time
         self.csv = csv
         self.spark = spark
+        if engine is not None:
+            if not isinstance(engine, str):
+                raise ValueError("engine must be a supported database engine name")
+            engine = engine.strip().lower()
+            self._jdbc_driver(engine)
         self.engine = engine
         if password_provider is not None and not callable(password_provider):
             raise TypeError("password_provider must be callable")
+        if connection_provider is not None:
+            if not callable(connection_provider):
+                raise TypeError("connection_provider must be callable")
+            if env_file is not None or password_provider is not None:
+                raise ValueError("connection_provider cannot be combined with env_file or password_provider")
+        self._connection_provider = connection_provider
         self._password_provider = password_provider
         self.env_vars = None  # None selects the OS environment; a dict selects explicit settings.
 
@@ -79,18 +100,43 @@ class Octopus:
 
     def _jdbc_connection(self):
         """Resolve one password snapshot for the entire public JDBC operation."""
+        settings = None
+        if self._connection_provider is not None:
+            try:
+                supplied = self._connection_provider()
+            except BitwardenError:
+                raise
+            except Exception:
+                raise RuntimeError("Connection provider failed; no fallback settings were used") from None
+            if not isinstance(supplied, dict):
+                raise ValueError("Connection provider must return a settings dictionary")
+            settings = dict(supplied)
+            required = ("HOST", "DATABASE", "USER", "PASSWORD")
+            for key in required:
+                if not isinstance(settings.get(key), str) or not settings[key].strip():
+                    raise ValueError(f"Connection provider requires nonempty {key}; no fallback settings were used")
+            if settings.get("PORT") is not None and (
+                not isinstance(settings["PORT"], str)
+                or not settings["PORT"].isdecimal()
+                or not 1 <= int(settings["PORT"]) <= 65535
+            ):
+                raise ValueError("Connection provider PORT must be a valid port string")
         password = None
+        # Validate endpoint settings before invoking a password-only provider.
+        url = self._jdbc_url(self.engine, settings=settings)
         if self._password_provider is not None:
             try:
                 password = self._password_provider()
+            except BitwardenError:
+                raise
             except Exception:
                 # Provider errors may contain secrets or captured CLI output.
                 raise RuntimeError("Password provider failed; no fallback password was used") from None
             if not isinstance(password, str) or not password.strip():
                 raise ValueError("Password provider must return a nonempty string; no fallback password was used")
         return (
-            self._jdbc_url(self.engine, password=password),
-            self._jdbc_base_options(self.engine, password=password),
+            url,
+            self._jdbc_base_options(self.engine, password=password, settings=settings),
         )
 
     def _jdbc_driver(self, engine: str):
@@ -109,39 +155,22 @@ class Octopus:
             raise ValueError(f"Unsupported engine: {engine}")
         return driver
 
-    def _jdbc_base_options(self, engine: str, *, password: Optional[str] = None):
-        """
-        Build base JDBC connection options from environment variables.
-        Supports both username/password and interactive authentication for MSSQL.
-        
-        Args:
-            engine: Database engine type (postgresql, mssql, oracle)
-            
-        Returns:
-            Dict containing user, password/auth, and driver configuration
-            
-        Notes:
-            For MSSQL with interactive auth: authentication and enableDeviceCodeFlow 
-            are set both in URL and as properties for maximum compatibility.
-        """
+    def _jdbc_base_options(self, engine: str, *, password: Optional[str] = None, settings=None):
+        """Build username/password JDBC properties from the selected settings."""
+        get_setting = self._get_env if settings is None else settings.get
         opts = {
-            "user": self._get_env("USER"),
+            "user": get_setting("USER"),
             "driver": self._jdbc_driver(engine),
         }
         
         if password is None:
-            password = self._get_env("PASSWORD")
+            password = get_setting("PASSWORD")
         
-        # For MSSQL with interactive auth, add device code flow property
-        if engine.lower() in ("mssql", "sqlserver") and not password:
-            opts["authentication"] = "ActiveDirectoryInteractive"
-            opts["enableDeviceCodeFlow"] = "true"
-        else:
-            opts["password"] = password
-            
+        opts["password"] = password
+
         return opts
 
-    def _jdbc_url(self, engine: str, *, password: Optional[str] = None):
+    def _jdbc_url(self, engine: str, *, settings=None):
         """
         Construct JDBC connection URL based on database engine type.
         Reads HOST, PORT, and DATABASE from environment variables.
@@ -156,61 +185,153 @@ class Octopus:
             ValueError: If engine type is not supported
             RuntimeError: If required environment variables are missing
             
-        Notes:
-            For MSSQL with interactive auth, DATABASE is optional.
-            Device code flow is enabled for MSSQL when no password is provided.
         """
-        host = self._get_env("HOST")
-        port = self._get_env("PORT")
-        db = self._get_env("DATABASE")
-        if password is None:
-            password = self._get_env("PASSWORD")
-
-        # For MSSQL with interactive auth, DATABASE is optional
-        if engine in ("mssql", "sqlserver") and not password:
-            if not host:
-                raise RuntimeError(f"Missing required environment variable: HOST")
-            
-            base_url = f"jdbc:sqlserver://{host}"
-            if port:
-                base_url += f":{port}"
-            
-            # Add authentication and device code flow parameters
-            params = "authentication=ActiveDirectoryInteractive;enableDeviceCodeFlow=true"
-            
-            if db:
-                return f"{base_url};databaseName={db};{params}"
-            else:
-                return f"{base_url};{params}"
-        
-        # For all other cases, DATABASE is required
+        get_setting = self._get_env if settings is None else settings.get
+        host = get_setting("HOST")
+        port = get_setting("PORT")
+        db = get_setting("DATABASE")
         if not all([host, db]):
             missing = [var for var, val in [("HOST", host), ("DATABASE", db)] if not val]
             raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
+        if not isinstance(host, str) or not isinstance(db, str) or not db.strip():
+            raise ValueError("HOST and DATABASE must be nonempty strings")
+        server, separator, instance = host.partition("\\")
+        if separator and (engine not in ("mssql", "sqlserver") or not re.fullmatch(r"[\w$-]+", instance, re.ASCII)):
+            raise ValueError("HOST contains an invalid SQL Server instance name")
+        if ":" in server:
+            address = server[1:-1] if server.startswith("[") and server.endswith("]") else server
+            try:
+                ipaddress.IPv6Address(address)
+            except ValueError:
+                raise ValueError("HOST must be a hostname or IP address; specify PORT separately") from None
+            if "%" in address:
+                raise ValueError("HOST must not contain an IPv6 scope identifier")
+            server = f"[{address}]"
+        else:
+            try:
+                ascii_host = server.encode("idna").decode("ascii")
+            except UnicodeError:
+                raise ValueError("HOST must be a valid hostname or IP address") from None
+            labels = ascii_host.removesuffix(".").split(".")
+            if len(ascii_host) > 254 or any(
+                not re.fullmatch(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?", label)
+                for label in labels
+            ):
+                raise ValueError("HOST must be a valid hostname or IP address")
+            server = ascii_host
+        host = server + (f"\\{instance}" if separator else "")
+        if port not in (None, "") and (
+            not isinstance(port, str) or not port.isascii() or not port.isdecimal()
+            or not 1 <= int(port) <= 65535
+        ):
+            raise ValueError("PORT must be a valid port string")
+        if any(ord(char) < 32 or ord(char) == 127 for char in db):
+            raise ValueError("DATABASE must not contain control characters")
+
         if engine in ("postgre", "postgres", "postgresql"):
+            db = quote(db, safe="")
             return f"jdbc:postgresql://{host}:{port}/{db}" if port else f"jdbc:postgresql://{host}/{db}"
 
         if engine in ("mssql", "sqlserver"):
+            if any(char in db for char in ";={}[]\"'") or db != db.strip() or " " in db:
+                db = "{" + db.replace("}", "}}") + "}"
             base_url = f"jdbc:sqlserver://{host}"
             if port:
                 base_url += f":{port}"
             return f"{base_url};databaseName={db}"
 
         if engine == "oracle":
+            if not re.fullmatch(r"[\w.$-]+", db, re.ASCII):
+                raise ValueError("DATABASE must be a valid Oracle service name")
             return f"jdbc:oracle:thin:@//{host}:{port}/{db}" if port else f"jdbc:oracle:thin:@//{host}/{db}"
 
         raise ValueError(f"Unsupported engine: {engine}")
 
 
-    def _load_jdbc(self, reader, schema: Optional[StructType]):
-        """Apply JDBC type overrides and reject names absent from the query result."""
+    def _jdbc_timeout_options(self, connect_timeout, query_timeout, socket_timeout):
+        """Validate seconds and map them to Spark/JDBC properties without I/O."""
+        connect_limit = 65535 if self.engine in ("mssql", "sqlserver") else 2147483
+        for name, value, limit in (
+            ("connect_timeout", connect_timeout, connect_limit),
+            ("query_timeout", query_timeout, 2147483647),
+            ("socket_timeout", socket_timeout, 2147483),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= limit
+            ):
+                raise ValueError(f"{name} must be None or an integer between 1 and {limit} seconds")
+        options = {}
+        if query_timeout is not None:
+            options["queryTimeout"] = str(query_timeout)
+        if self.engine in ("postgresql", "postgres", "postgre"):
+            if connect_timeout is not None:
+                options["connectTimeout"] = str(connect_timeout)
+                options["loginTimeout"] = str(connect_timeout)
+            if socket_timeout is not None:
+                options["socketTimeout"] = str(socket_timeout)
+        elif self.engine in ("mssql", "sqlserver"):
+            if connect_timeout is not None:
+                options["loginTimeout"] = str(connect_timeout)
+            if socket_timeout is not None:
+                options["socketTimeout"] = str(socket_timeout * 1000)
+        elif self.engine == "oracle":
+            if connect_timeout is not None:
+                options["oracle.net.CONNECT_TIMEOUT"] = str(connect_timeout * 1000)
+                options["oracle.net.OUTBOUND_CONNECT_TIMEOUT"] = str(connect_timeout)
+            if socket_timeout is not None:
+                options["oracle.jdbc.ReadTimeout"] = str(socket_timeout * 1000)
+        return options
+
+    @staticmethod
+    def _validate_schema(schema):
         if schema is not None:
             if not isinstance(schema, StructType):
                 raise TypeError("schema must be a pyspark.sql.types.StructType")
             names = schema.fieldNames()
             if len(names) != len(set(names)):
                 raise ValueError("schema must not contain duplicate column names")
+
+    @staticmethod
+    def _validate_name(value, name):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a nonempty string")
+
+    def _validate_read_arguments(
+        self, queries, batch_size, schema, parallel_read, partition_column,
+        lower_bound, upper_bound, num_partitions,
+    ):
+        self._validate_schema(schema)
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 0:
+            raise ValueError("batch_size must be an integer >= 0 for JDBC reads")
+        if parallel_read:
+            if not isinstance(partition_column, str) or not partition_column.strip():
+                raise ValueError("partition_column is required when parallel_read=True")
+            if lower_bound is None or upper_bound is None:
+                raise ValueError("lower_bound and upper_bound are required when parallel_read=True")
+            if not isinstance(num_partitions, int) or isinstance(num_partitions, bool) or num_partitions < 1:
+                raise ValueError("num_partitions must be >= 1 when parallel_read=True")
+            try:
+                ordered = lower_bound < upper_bound
+            except TypeError:
+                ordered = False
+            if not ordered:
+                raise ValueError("lower_bound must be less than upper_bound")
+        try:
+            queries = list(queries)
+        except TypeError:
+            raise ValueError("queries must contain (query, name) pairs") from None
+        for entry in queries:
+            if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+                raise ValueError("queries must contain (query, name) pairs")
+            self._validate_name(entry[0], "query")
+            self._validate_name(entry[1], "query name")
+        return queries
+
+    def _load_jdbc(self, reader, schema: Optional[StructType]):
+        """Apply JDBC type overrides and reject names absent from the query result."""
+        self._validate_schema(schema)
+        if schema is not None:
             custom_schema = ", ".join(
                 f"`{field.name.replace('`', '``')}` {field.dataType.simpleString()}"
                 for field in schema.fields
@@ -241,6 +362,10 @@ class Octopus:
         trust_server_certificate: bool = True,
         encrypt: bool = False,
         table_format: str = "delta",
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ):
         """
         Load data from database via JDBC into Delta or Iceberg tables.
@@ -253,7 +378,17 @@ class Octopus:
         writes immediately and returns None. Tables are written sequentially;
         a later failure does not roll back earlier writes.
         
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             queries: List of (query, table_name) tuples to execute and save
             target_schema: Target namespace, optionally catalog-qualified
                 (for example "lake.raw" for an Iceberg catalog).
@@ -293,22 +428,20 @@ class Octopus:
         if table_format not in ("delta", "iceberg"):
             raise ValueError("table_format must be 'delta' or 'iceberg'")
 
+        self._validate_name(target_schema, "target_schema")
+        queries = self._validate_read_arguments(
+            queries, batch_size, schema, parallel_read, partition_column,
+            lower_bound, upper_bound, num_partitions,
+        )
+
+        timeout_options = self._jdbc_timeout_options(connect_timeout, query_timeout, socket_timeout)
         url, opts = self._jdbc_connection()
+        opts.update(timeout_options)
         
         # Add MSSQL-specific SSL/encryption options
         if self.engine.lower() in ("mssql", "sqlserver"):
             opts["trustServerCertificate"] = str(trust_server_certificate).lower()
             opts["encrypt"] = str(encrypt).lower()
-
-        if parallel_read:
-            if not partition_column:
-                raise ValueError("partition_column is required when parallel_read=True")
-            if lower_bound is None or upper_bound is None:
-                raise ValueError("lower_bound and upper_bound are required when parallel_read=True")
-            if num_partitions is None or num_partitions < 1:
-                raise ValueError("num_partitions must be >= 1 when parallel_read=True")
-            if lower_bound >= upper_bound:
-                raise ValueError("lower_bound must be less than upper_bound")
 
         for query, table_name in queries:
             reader = (
@@ -355,6 +488,10 @@ class Octopus:
         schema: Optional[StructType] = None,
         trust_server_certificate: bool = True,
         encrypt: bool = False,
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ):
         """
         Read data from database via JDBC into Spark DataFrames (without writing tables).
@@ -366,7 +503,17 @@ class Octopus:
         num_partitions >= 1. Bounds divide reads; they do not filter source rows.
         These options are ignored when parallel_read=False.
         
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             queries: List of (query, alias) tuples used to construct DataFrames
             batch_size: Number of rows to fetch per round trip (default: 10000)
             num_partitions: Number of JDBC partitions when parallel_read=True
@@ -398,22 +545,19 @@ class Octopus:
         if self.engine is None:
             raise RuntimeError("Engine is not set")
 
+        queries = self._validate_read_arguments(
+            queries, batch_size, schema, parallel_read, partition_column,
+            lower_bound, upper_bound, num_partitions,
+        )
+
+        timeout_options = self._jdbc_timeout_options(connect_timeout, query_timeout, socket_timeout)
         url, opts = self._jdbc_connection()
+        opts.update(timeout_options)
 
         # Add MSSQL-specific SSL/encryption options
         if self.engine.lower() in ("mssql", "sqlserver"):
             opts["trustServerCertificate"] = str(trust_server_certificate).lower()
             opts["encrypt"] = str(encrypt).lower()
-
-        if parallel_read:
-            if not partition_column:
-                raise ValueError("partition_column is required when parallel_read=True")
-            if lower_bound is None or upper_bound is None:
-                raise ValueError("lower_bound and upper_bound are required when parallel_read=True")
-            if num_partitions is None or num_partitions < 1:
-                raise ValueError("num_partitions must be >= 1 when parallel_read=True")
-            if lower_bound >= upper_bound:
-                raise ValueError("lower_bound must be less than upper_bound")
 
         dfs = {}
 
@@ -456,11 +600,25 @@ class Octopus:
         trust_server_certificate: bool = True,
         encrypt: bool = False,
         num_partitions: int = 4,
+        *,
+        connect_timeout: Optional[int] = None,
+        query_timeout: Optional[int] = None,
+        socket_timeout: Optional[int] = None,
     ):
         """
         Write Spark DataFrame(s) to a JDBC database table.
         
+        Timeouts are driver-enforced, not an overall Spark job deadline. They do
+        not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
+        their timeout settings for later actions. See README for property mappings.
+
         Args:
+            connect_timeout: Optional positive connection timeout in seconds.
+                None preserves driver defaults; limits vary by engine.
+            query_timeout: Optional positive per-statement timeout in seconds.
+                None preserves Spark defaults. Write/batch behavior depends on the driver.
+            socket_timeout: Optional positive socket read timeout in seconds.
+                None preserves driver defaults. This can also interrupt a running query.
             data: DataFrame or dict[str, DataFrame]. If dict, keys are table names.
             target_table: Required when data is a single DataFrame.
             target_schema: Optional schema prefix for destination table(s).
@@ -495,13 +653,6 @@ class Octopus:
         ):
             raise ValueError("num_partitions must be an integer >= 1")
 
-        url, opts = self._jdbc_connection()
-
-        # Add MSSQL-specific SSL/encryption options
-        if self.engine.lower() in ("mssql", "sqlserver"):
-            opts["trustServerCertificate"] = str(trust_server_certificate).lower()
-            opts["encrypt"] = str(encrypt).lower()
-
         targets = {}
         if isinstance(data, dict):
             targets = data
@@ -511,6 +662,22 @@ class Octopus:
             if not target_table:
                 raise ValueError("target_table is required when data is a single DataFrame")
             targets[target_table] = data
+
+        if target_schema is not None:
+            self._validate_name(target_schema, "target_schema")
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
+            raise ValueError("batch_size must be an integer >= 1 for JDBC writes")
+        for table_name in targets:
+            self._validate_name(table_name, "target_table")
+
+        timeout_options = self._jdbc_timeout_options(connect_timeout, query_timeout, socket_timeout)
+        url, opts = self._jdbc_connection()
+        opts.update(timeout_options)
+
+        # Add MSSQL-specific SSL/encryption options
+        if self.engine.lower() in ("mssql", "sqlserver"):
+            opts["trustServerCertificate"] = str(trust_server_certificate).lower()
+            opts["encrypt"] = str(encrypt).lower()
 
         for table_name, df in targets.items():
             if target_schema:
