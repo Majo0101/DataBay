@@ -8,6 +8,8 @@ import subprocess
 import warnings
 from typing import Literal
 
+from databay.etl._status import SingleLineStatus
+
 
 class BitwardenError(RuntimeError):
     """Sanitized vault failure; stage identifies the original failed operation.
@@ -60,6 +62,13 @@ def _run_bw(arguments, env, timeout):
     return result.stdout
 
 
+def _password_status():
+    """Show pending feedback before unlock and replace it after successful lock."""
+    status = SingleLineStatus()
+    status.update("Checking password...")
+    return lambda: status.update("Password accepted - vault locked.", final=True)
+
+
 def _bitwarden_value(item_id: str, kind: str, *, timeout: float = 10) -> str:
     """Prompt, unlock, read one login password, and lock the vault before returning.
 
@@ -83,6 +92,7 @@ def _bitwarden_value(item_id: str, kind: str, *, timeout: float = 10) -> str:
     password = None
     stage = "prompt"
     original = None
+    accepted_status = None
     try:
         try:
             with warnings.catch_warnings():
@@ -90,6 +100,7 @@ def _bitwarden_value(item_id: str, kind: str, *, timeout: float = 10) -> str:
                 master_password = getpass.getpass("Bitwarden master password: ")
         except getpass.GetPassWarning:
             raise BitwardenError("prompt", reason="hidden_input") from None
+        accepted_status = _password_status()
         child_env["_DATABAY_BW_MASTER"] = master_password
         stage = "unlock"
         try:
@@ -141,6 +152,9 @@ def _bitwarden_value(item_id: str, kind: str, *, timeout: float = 10) -> str:
                 if isinstance(original, BitwardenError):
                     raise BitwardenError(original.stage, reason=original.reason, lock_failed=True) from None
                 raise BitwardenError("lock", lock_failed=True) from None
+            else:
+                if original is None and password is not None:
+                    accepted_status()
         finally:
             child_env.clear()
             master_password = None

@@ -183,3 +183,81 @@ def test_cli_decodes_utf8_without_using_locale(monkeypatch):
         return run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([197, 190, 195, 161, 240, 159, 148, 145]))"], **kwargs)
     monkeypatch.setattr(credentials.subprocess, "run", child)
     assert credentials._run_bw(["get", "password", "fake-item"], {}, 10) == "\u017e\u00e1\U0001f511"
+
+
+def test_password_acceptance_is_reported_after_lock(vault, capsys, monkeypatch):
+    run = credentials._run_bw
+
+    def checked_run(arguments, env, timeout):
+        expected = "Checking password..." if arguments[0] == "unlock" else ""
+        assert capsys.readouterr().out == expected
+        return run(arguments, env, timeout)
+
+    monkeypatch.setattr(credentials, "_run_bw", checked_run)
+    bitwarden_password("item-id")
+    assert capsys.readouterr().out == "\rPassword accepted - vault locked.\n"
+
+
+@pytest.mark.parametrize("operation", ["unlock", "get", "lock"])
+def test_failed_vault_operation_does_not_report_acceptance(vault, capsys, operation):
+    _, state = vault
+    state["fail"] = operation
+    with pytest.raises(RuntimeError):
+        bitwarden_password("item-id")
+    assert capsys.readouterr().out == "Checking password..."
+
+
+
+def test_notebook_password_status_replaces_pending_message(monkeypatch):
+    from unittest.mock import MagicMock
+    import IPython
+    import IPython.display
+
+    handle = MagicMock()
+    display = MagicMock(return_value=handle)
+    monkeypatch.setattr(IPython, "get_ipython", lambda: MagicMock(kernel=True))
+    monkeypatch.setattr(IPython.display, "display", display)
+    accepted = credentials._password_status()
+    display.assert_called_once_with("Checking password...", display_id=True)
+    handle.update.assert_not_called()
+    accepted()
+    handle.update.assert_called_once_with("Password accepted - vault locked.")
+
+
+
+@pytest.mark.parametrize("stage", ["initial", "accepted"])
+@pytest.mark.parametrize("failure", [None, "lock"])
+def test_display_failure_never_changes_vault_result(vault, monkeypatch, stage, failure):
+    from unittest.mock import MagicMock
+    import IPython
+    import IPython.display
+
+    calls, state = vault
+    state["fail"] = failure
+    handle = MagicMock()
+    handle.update.side_effect = OSError("private display failure")
+    display = MagicMock(return_value=handle)
+    if stage == "initial":
+        display.side_effect = OSError("private display failure")
+    monkeypatch.setattr(IPython, "get_ipython", lambda: MagicMock(kernel=True))
+    monkeypatch.setattr(IPython.display, "display", display)
+    if failure:
+        with pytest.raises(credentials.BitwardenError) as caught:
+            bitwarden_password("item-id")
+        assert caught.value.lock_failed
+        assert "private" not in str(caught.value)
+        handle.update.assert_not_called()
+    else:
+        assert bitwarden_password("item-id") == "  literal-password  "
+    assert [call[0][3] for call in calls] == ["unlock", "get", "lock"]
+
+
+def test_broken_terminal_does_not_abort_vault_cleanup(vault, monkeypatch):
+    import IPython
+    monkeypatch.setattr(IPython, "get_ipython", lambda: None)
+    def broken_print(*args, **kwargs):
+        raise BrokenPipeError("private output error")
+    monkeypatch.setattr("builtins.print", broken_print)
+    assert bitwarden_password("item-id") == "  literal-password  "
+    calls, _ = vault
+    assert calls[-1][0][3] == "lock"

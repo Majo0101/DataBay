@@ -11,6 +11,13 @@ from pyspark.sql.types import StructType
 
 from databay.core._columns import literal_col
 from databay.etl.credentials import BitwardenError
+from databay.etl._status import SingleLineStatus
+
+
+def _table_progress(total):
+    """Replace one notebook display, or one terminal line, as tables advance."""
+    status = SingleLineStatus(carriage_return=True)
+    return lambda index, name: status.update(f"[{index}/{total}] {name}")
 
 
 class Octopus:
@@ -376,7 +383,8 @@ class Octopus:
         These options are ignored when parallel_read=False. The Spark server
         requires the selected format and its catalog configuration. This method
         writes immediately and returns None. Tables are written sequentially;
-        a later failure does not roll back earlier writes.
+        a later failure does not roll back earlier writes. Progress messages show
+        the current table and its position in the batch on one updating line.
         
         Timeouts are driver-enforced, not an overall Spark job deadline. They do
         not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
@@ -443,7 +451,9 @@ class Octopus:
             opts["trustServerCertificate"] = str(trust_server_certificate).lower()
             opts["encrypt"] = str(encrypt).lower()
 
-        for query, table_name in queries:
+        progress = _table_progress(len(queries))
+        for index, (query, table_name) in enumerate(queries, start=1):
+            progress(index, table_name)
             reader = (
                 self.spark.read
                 .format("jdbc")
@@ -498,7 +508,8 @@ class Octopus:
 
         Returns lazy Spark DataFrames keyed by the supplied aliases, not Pandas
         data or collected rows. Later actions execute the reads. Repeated aliases
-        replace earlier entries in the returned dictionary.
+        replace earlier entries in the returned dictionary. Progress messages report
+        the current DataFrame on one updating line, not completed data downloads.
         Parallel reads require partition_column, lower_bound < upper_bound and
         num_partitions >= 1. Bounds divide reads; they do not filter source rows.
         These options are ignored when parallel_read=False.
@@ -561,7 +572,9 @@ class Octopus:
 
         dfs = {}
 
-        for query, table_name in queries:
+        progress = _table_progress(len(queries))
+        for index, (query, table_name) in enumerate(queries, start=1):
+            progress(index, table_name)
             reader = (
                 self.spark.read
                 .format("jdbc")
@@ -607,6 +620,7 @@ class Octopus:
     ):
         """
         Write Spark DataFrame(s) to a JDBC database table.
+        Show the current table and batch position on one updating line.
         
         Timeouts are driver-enforced, not an overall Spark job deadline. They do
         not bound credential prompts or Spark Connect RPCs. Lazy DataFrames retain
@@ -679,7 +693,9 @@ class Octopus:
             opts["trustServerCertificate"] = str(trust_server_certificate).lower()
             opts["encrypt"] = str(encrypt).lower()
 
-        for table_name, df in targets.items():
+        progress = _table_progress(len(targets))
+        for index, (table_name, df) in enumerate(targets.items(), start=1):
+            progress(index, table_name)
             if target_schema:
                 dbtable = f"{target_schema}.{table_name}"
             else:
